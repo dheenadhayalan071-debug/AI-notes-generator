@@ -1,0 +1,6 @@
+{
+  "name": "AI Notes Generator — Classroom Study Studio",
+  "description": "Convert handwritten classroom notes and PDFs into source-verified study materials, step-by-step derivations, and traceable MCQs with unit PDF exports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
