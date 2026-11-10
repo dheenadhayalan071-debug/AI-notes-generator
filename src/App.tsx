@@ -174,16 +174,45 @@ export default function App() {
         }),
       });
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(
-          data.error || 'Failed to process handwritten notes. Please verify your setup.'
-        );
+      let responseText = '';
+      try {
+        responseText = await response.text();
+      } catch (readErr: any) {
+        throw new Error(`Failed to read response from server: ${readErr?.message || 'Network error'}`);
       }
 
+      let data: any;
+      try {
+        data = JSON.parse(responseText);
+      } catch {
+        // Response was not valid JSON (e.g. 404 HTML, 502/504 Bad Gateway, or plain text)
+        if (!response.ok) {
+          throw new Error(
+            `Backend server error (HTTP ${response.status} ${response.statusText}): ${
+              responseText.slice(0, 200).trim() || 'API route not reachable'
+            }`
+          );
+        } else {
+          throw new Error(
+            `Server returned non-JSON output (HTTP ${response.status}): ${responseText.slice(0, 200).trim()}`
+          );
+        }
+      }
+
+      if (!response.ok) {
+        const errorMsg =
+          typeof data.error === 'object' && data.error?.message
+            ? data.error.message
+            : data.error || data.message || `Processing failed (HTTP ${response.status}): ${response.statusText}`;
+        throw new Error(errorMsg);
+      }
+
+      // Support payload whether under data envelope or direct root
+      const payloadData = data.data || data;
+
       const transcriptMap = new Map<number, string>();
-      if (Array.isArray(data.rawPageTranscripts)) {
-        for (const pt of data.rawPageTranscripts) {
+      if (Array.isArray(payloadData.rawPageTranscripts)) {
+        for (const pt of payloadData.rawPageTranscripts) {
           transcriptMap.set(Number(pt.pageNumber) || 1, String(pt.rawTranscript || ''));
         }
       }
@@ -195,7 +224,7 @@ export default function App() {
 
       // Crop any detected diagram regions directly from the uploaded page scan
       const enrichedSections = await Promise.all(
-        (data.sections || []).map(async (sec: any) => {
+        (payloadData.sections || []).map(async (sec: any) => {
           const itemsWithCrops = await Promise.all(
             (sec.items || []).map(async (item: any) => {
               if (item.diagramRegion && item.diagramRegion.box2d) {
@@ -236,8 +265,8 @@ export default function App() {
         updatedAt: now,
         sourcePages: enrichedPages,
         sections: enrichedSections,
-        mcqs: data.mcqs || [],
-        mcqGenerationNote: data.mcqGenerationNote,
+        mcqs: payloadData.mcqs || [],
+        mcqGenerationNote: payloadData.mcqGenerationNote,
       };
 
       const saved = await saveStudyUnit(newUnit);

@@ -1,142 +1,98 @@
-# AI Notes Generator — Source-Verified Classroom Study Studio (Final Refined Plan)
+# Master Engineering Audit & Production Repair Plan — AI Notes Studio
 
-A personal-use, AI-powered academic web application that converts multi-page handwritten classroom notes and PDFs into structured, English-language study materials and practice MCQs—featuring responsive mobile/desktop workflows, `IndexedDB` document persistence with full `.json` backup/restore, strict source-entailment verification, and standalone unit PDF file downloads.
+Resolving the critical Vercel production failure (`"Unexpected token 'T', 'The page c...' is not valid JSON"`), implementing dual Vercel Serverless Function + Express architecture, client-side canvas image optimization, robust Content-Type and HTTP status response parsing, and comprehensive test suite validation.
 
-## User Review & Final Refinements Incorporated
+---
+
+## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> All four final refinements have been integrated into the architecture while preserving the 5-module workflow, responsive layouts, and academic light theme:
+> **Root Cause Identified**:
+> In Vercel production (`https://ai-notes-generator-alpha.vercel.app/`), POST `/api/notes/process` returns a `404 Not Found` with plain text: `The page could not be found\nNOT_FOUND\n...`.
+> In `src/App.tsx`, the client directly calls `const data = await response.json()` without checking `response.ok` or verifying that `response.headers.get('content-type')` is JSON. When `response.json()` fails to parse the `"The page..."` 404 string, JavaScript throws:
+> `"Unexpected token 'T', 'The page c...' is not valid JSON"`.
+> 
+> Furthermore, the repository currently contains only `server.ts` (a standalone Express server meant for local development or Node/Docker hosts), but lacked a Vercel-compatible serverless entry point (`/api/notes/process.ts` or `vercel.json` rewrites) for Vercel deployments.
 
-1. **Strengthened AI Grounding (Semantic Entailment + Source Context Validation)**:
-   - OCR substring matching alone only checks that a quote exists on the page—it **never** automatically marks `generatedExplanation` as `VERIFIED`.
-   - Our server pipeline enforces a **Two-Stage Extraction + Entailment Audit**:
-     - **Stage A (Extractive OCR & Candidate Restructuring)**: Transcribes the handwritten pages verbatim and links each `originalKeyword` to its `supportingSourcePassage` and `sourcePageReference`.
-     - **Stage B (Strict Source-Context Entailment Audit)**: Validates `generatedExplanation` against the actual `supportingSourcePassage` and page transcript. Any explanation that introduces unstated facts, external textbook definitions, or unverified formula steps—or whose source passage fails deterministic transcript checks—is strictly flagged as `NEEDS_REVIEW` with a specific `uncertaintyReason`.
-2. **Strict Source-Only Rule for Insufficient Notes**:
-   - When handwritten notes list a keyword, bullet, or formula fragment without enough written context to explain it, the system **never** fills the gap with external knowledge. Instead, it preserves the keyword and verbatim source text, notes that the uploaded scan lacks sufficient detail for expansion, and flags the item as `NEEDS_REVIEW` so the student can supply or approve the explanation manually.
-3. **MCQ Traceability & Insufficiency Safeguard**:
-   - Every MCQ (`question`, `correctIndex` answer, and `explanation`) must include a verbatim `supportingSourcePassage` and `sourcePageReference` from the uploaded notes.
-   - If the uploaded notes lack sufficient factual detail to form valid questions without guessing or pulling outside knowledge, the system generates only the exact number of questions strictly supported by the source (or zero if the notes are purely fragmentary), displaying a transparent notice rather than fabricating unsupported questions.
-4. **Full Data Backup & Restore (`.json` Archive)**:
-   - Includes an **"Export Backup (.json)"** and **"Restore Backup (.json)"** control in the Dashboard so users can export their entire `IndexedDB` library (or individual units)—including source scans, manual edits, verification statuses, diagram crops, and MCQs—and restore them at any time to prevent data loss.
+- **Confirmed Decision 1 — Dual Deployment Architecture**:
+  - Extract the core processing logic (`processNotesCore` and `regenerateMcqsCore`) into a shared, robust module (`src/server/notesProcessor.ts`).
+  - Deploy standard Vercel serverless functions in `/api/notes/process.ts` and `/api/notes/regenerate-mcqs.ts` (configured with `maxDuration: 60` and compatible with Vercel's Node runtime) alongside a root `vercel.json` rewrite configuration.
+  - Keep `server.ts` Express server mounted for AI Studio dev (`npm run dev`) and standalone production (`npm start`).
+- **Confirmed Decision 2 — Automatic Canvas Downscaling (Max 1600px, JPEG 85%)**:
+  - Add client-side canvas downscaling before dispatching to the API. High-resolution phone camera photos ($4000\times3000\text{px}$, 10MB+) will be scaled to $\le 1600\text{px}$ maximum dimension at 85% JPEG quality. This reduces payload size from 25–40MB down to $< 1.5\text{MB}$ while preserving fine handwriting lines, eliminating Vercel payload limit errors (4.5MB limit on Vercel hobby/pro) and drastically accelerating OCR processing.
+- **Confirmed Decision 3 — Defensive HTTP & Content-Type Error Handling**:
+  - Never blind-call `.json()`. First inspect `response.ok` and `content-type`. If non-JSON text is returned (such as a 404 or 504 gateway timeout), capture the text cleanly and display a clear, actionable error: *"Backend service unavailable (HTTP 404 Not Found). The API route could not be reached."* or report specific Gemini API issues without exposing keys.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**: Converts handwritten classroom notes (multiple images or multi-page PDFs) into structured, unit-organized study materials and concept-clarity MCQs across **Physics (10 Units)**, **Tamil**, **Psychology**, and **General Knowledge**.
-- **Language Consistency**: Produces clean, consistent **English output** across all headings, expanded explanations, derivations, and MCQs (preserving original Tamil script terms alongside English explanations where present in Tamil notes).
-- **Personal-Use Scope**: Focused strictly on the single-user study workflow (`Upload → AI Processing → Review → PDF Export`) with local `IndexedDB` persistence and portable `.json` backup/restore.
+- **What It Does**: Personal-use academic studio converting multi-page handwritten notes and PDFs into source-entailed study guides and traceable MCQs across arbitrary subjects and units.
+- **Strict Anti-Hallucination & Provenance**: Preserves every extracted keyword verbatim, derives formulas step-by-step, crops actual diagrams directly from the source pages, flags unclear handwriting as `NEEDS_REVIEW`, and allows zero MCQs if notes lack sufficient context.
+- **Production Dual Target**: Operates seamlessly in AI Studio development (via `server.ts` Express backend on port 3000) and Vercel production serverless (via `/api/notes/*` functions).
 
 ---
 
 ## 2. User Experience & Visual Design
 
-### Key User Flows (The 5 Core Modules)
-
-1. **01. Dashboard (with Data Backup & Restore)**:
-   - Displays the 4 supported subjects (**Physics — Units 1 to 10**, **Tamil**, **Psychology**, **General Knowledge**), saved unit materials stored in `IndexedDB`, verification status counts (`VERIFIED` vs. `NEEDS_REVIEW`), and quick actions to open any unit in the Editor or export its PDF.
-   - **Data Backup Toolbar**: Provides one-click **Export Library Backup (`.json`)** and **Restore from Backup (`.json`)** buttons to safeguard all saved study materials, edits, and MCQs.
-2. **02. Notes Upload**:
-   - Accepts **multiple images** (`.jpg`, `.png`, `.webp`) and **multi-page PDFs** (client-side PDF page rendering so every PDF page becomes an inspectable page image).
-   - Provides page reordering, rotation, removal, subject selection, unit selection (Physics Units 1–10 or subject units), and one-click sample handwritten classroom notes for instant testing.
-3. **03. AI Processing**:
-   - Server-side multimodal processing via Express (`/api/notes/process`) showing real-time stage progress:
-     1. *Page OCR & Illegibility Detection*
-     2. *Keyword, Formula & Diagram Bounding-Box Extraction*
-     3. *Strict Source-Only Expansion (No External Knowledge)*
-     4. *Source-Context Entailment & Sufficiency Audit (`VERIFIED` / `NEEDS_REVIEW`)*
-     5. *Traceable Source-Only MCQ Synthesis*
-4. **04. Study Material Editor**:
-   - **Desktop (`>= 1024px`)**: Side-by-side split view (Left: multi-page zoomable source scan with diagram bounding boxes; Right: structured study material editor).
-   - **Mobile (`< 1024px`)**: Switchable top tabs (`Original Notes (Page X/N)` | `Generated Editor`) with a badge showing pending `NEEDS_REVIEW` items.
-   - **Editing & Review Controls**: Inline editing for headings, original keywords, expanded explanations, step-by-step formulas/derivations, cropped source diagrams with label tables, and manual resolution of `NEEDS_REVIEW` flags. All edits persist automatically to `IndexedDB`.
-5. **05. PDF & MCQ Generator**:
-   - **PDF Preview & Separate Unit Download**:
-     - Displays a paginated A4 preview with title block, Table of Contents, highlighted original keywords, step-by-step derivations, embedded diagram crops, and page numbers.
-     - Automatically scales the A4 sheet on mobile screens using a `ResizeObserver` scale wrapper (`transform: scale(...)` with matched layout height).
-     - **"Download Unit PDF" Button**: Builds and downloads a standalone `Subject_Unit_X.pdf` binary file directly to the device (compatible with Android and desktop browsers).
-   - **Traceable MCQ Practice**:
-     - Interactive multiple-choice practice where every question, correct answer, and explanation displays its exact `supportingSourcePassage` and `sourcePageReference` from the uploaded notes. If notes have insufficient context for additional questions, clearly notifies the user instead of inventing external questions.
-
-### Visual Identity & Theme
-
-- **Aesthetic Direction**: Crisp Academic Light Theme (`#F8FAFC` workspace canvas, `#FFFFFF` cards and A4 sheets, `#0F172A` primary ink, `#0284C7` academic azure accent, `#059669` verified emerald, `#D97706` review amber).
-- **Typography (2+1 Font Rule)**:
-  - **Display & Headings**: `Plus Jakarta Sans` (600/700).
-  - **Body & Study Explanations**: `DM Sans` (400/500).
-  - **Formulas, Derivations & Page Metrics**: `IBM Plex Mono` (`tabular-nums`).
+- **Mobile First Responsive UX (360px–430px)**:
+  - Header, toolbar, cards, and modal dialogs designed with single-line controls, text truncation escape hatches, and `max-w-full overflow-x-hidden` containers to eliminate horizontal page scrolling.
+  - Module 04 (Study Material Editor) provides switchable tabs (**Original Notes** with zoom & page navigation vs. **Study Editor**) on mobile screens ($< 1024\text{px}$) and a synchronized side-by-side split view on desktop ($\ge 1024\text{px}$).
+- **PDF Preview & Export**:
+  - Full-screen preview toggle, page switcher (`Page X of Y`), and zoom controls (`Fit`, `Zoom In`, `Zoom Out`) with responsive `ResizeObserver` scaling on mobile.
+  - Native binary `.pdf` export (`jspdf`) creating genuine standalone PDF files with Table of Contents, keyword highlights, derivation steps, embedded diagram crops, and footer numbering.
 
 ---
 
-## 3. Key Technical Decisions & Grounding Architecture
-
-- **Decision 1 — Source-Context Entailment & Insufficiency Gate**:
-  - *Why*: OCR text matching only proves a keyword appeared on the page; it does not prove the generated explanation is supported by the notes.
-  - *Implementation*:
-    1. Every item requires `originalKeyword`, `supportingSourcePassage`, `generatedExplanation`, `sourcePageReference`, `sourceSufficiency` (`'SUFFICIENT' | 'INSUFFICIENT'`), `entailmentVerified` (`boolean`), and `verificationStatus` (`'VERIFIED' | 'NEEDS_REVIEW'`).
-    2. If the handwritten notes only mention a keyword or incomplete formula without supporting explanation (`sourceSufficiency === 'INSUFFICIENT'`), the system refrains from adding external facts and marks `verificationStatus = "NEEDS_REVIEW"`.
-    3. Both the AI entailment check and the server-side verifier audit that `supportingSourcePassage` is grounded in the page transcript, contains sufficient explanatory clauses (not just a bare 1–2 word title), has no `[unclear]` markers, and introduces no unsupported claims before allowing `VERIFIED`.
-- **Decision 2 — Traceable Source-Only MCQs**:
-  - *Implementation*: Each MCQ object requires `question`, `options`, `correctIndex`, `explanation`, `supportingSourcePassage`, and `sourcePageReference`. Server-side validation discards or flags any MCQ that lacks a verified `supportingSourcePassage` from the notes, and permits zero or fewer MCQs when the uploaded notes lack sufficient testable statements.
-- **Decision 3 — IndexedDB Storage + Portable JSON Backup/Restore**:
-  - *Implementation*: All units, multi-page scans, edited explanations, and MCQs are persisted in `IndexedDB` (`ai_notes_studio_db`) and can be exported to a single timestamped `.json` backup file or restored via file upload with schema validation and merge/replace support.
-- **Decision 4 — Validated Server-Side Gemini Model & Binary PDF Export**:
-  - *Implementation*: Server-only `@google/genai` integration in `server.ts` using `process.env.GEMINI_API_KEY` and validated model ID (`gemini-3.8-flash`), paired with client-side binary `.pdf` generation via `jspdf` for reliable downloads on Android and desktop.
-
----
-
-## 4. Technical Architecture & Data Strategy *(Technical Reference)*
-
-### Architecture & Component Diagram
+## 3. Technical Architecture & Component Flow
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                 Responsive Application Shell (Desktop & Mobile)              │
-│  [AI Notes Studio]   [01. Dashboard ··· 05. PDF & MCQs]   [+ Upload Notes]   │
+│                   Frontend Client (React 19 + Tailwind CSS)                  │
+│  • Multi-Page Images & PDFs Dropzone                                         │
+│  • Client-Side Canvas Optimizer (Max 1600px, JPEG 85% — Fast & < 1.5MB)      │
+│  • Safe API Client: Status Code + Content-Type Validation (No JSON crashes)  │
+│  • IndexedDB Storage: Automatic saving of edits, units, custom subjects      │
+│  • JSON Backup & Restore with Schema Validation (Merge vs. Replace)          │
 └──────────────────────────────────────┬───────────────────────────────────────┘
                                        │
-         ┌─────────────────────────────┼─────────────────────────────┐
-         ▼                             ▼                             ▼
-┌─────────────────┐         ┌─────────────────────┐         ┌──────────────────┐
-│  01. Dashboard  │         │  02. Notes Upload   │         │ 03. AI Pipeline  │
-│  • Physics 1-10 │         │  • Multi-Image &    │         │ • OCR Transcript │
-│  • Tamil, Psych,│────────▶│    Multi-Page PDF   │────────▶│ • Source-Only    │
-│    General Know.│         │  • Page Rasterizer  │         │   Expansion      │
-│  • JSON Backup  │         │  • Subject & Unit   │         │ • Entailment &   │
-│    & Restore    │         │    Assignment       │         │   Context Audit  │
-└────────┬────────┘         └─────────────────────┘         └────────┬─────────┘
-         │                                                           │
-         └─────────────────────────────┬─────────────────────────────┘
-                                       ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         04. Study Material Editor                            │
-│  • Desktop: Side-by-Side Split View (45% Source Scan | 55% Study Editor)     │
-│  • Mobile : Switchable Tabs ([Original Notes] <---> [Generated Editor])      │
-│  ┌───────────────────────────────────┬────────────────────────────────────┐  │
-│  │ Source Scan & Diagram Cropper     │ Structured English Study Editor    │  │
-│  │ • Multi-page viewer & zoom        │ • Headings & Highlighted Keywords  │  │
-│  │ • Bounding-box diagram crop       │ • Verbatim Source Passage Citation │  │
-│  │ • Page jump from any concept      │ • Step-by-Step Derivations         │  │
-│  │                                   │ • NEEDS_REVIEW Filter & Approval   │  │
-│  └───────────────────────────────────┴────────────────────────────────────┘  │
-└──────────────────────────────────────┬───────────────────────────────────────┘
-                                       ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                     05. PDF & MCQ Generator Studio                           │
-│  ┌───────────────────────────────────┬────────────────────────────────────┐  │
-│  │ Tab A: Responsive A4 PDF & Export │ Tab B: Traceable Source-Only MCQs  │  │
-│  │ • ResizeObserver Mobile Scaling   │ • Grounded Question + Answer + Why │  │
-│  │ • TOC, Keywords, Formulas, Crops  │ • Verbatim Source Quote & Page Ref │  │
-│  │ • Binary .pdf Download (jspdf)    │ • Insufficiency Guard (No Guessing)│  │
-│  └───────────────────────────────────┴────────────────────────────────────┘  │
-└──────────────────────────────────────┬───────────────────────────────────────┘
+                        POST /api/notes/process (JSON)
                                        │
-                    ┌──────────────────┴──────────────────┐
-                    ▼                                     ▼
-┌───────────────────────────────────────┐ ┌────────────────────────────────────┐
-│ Browser IndexedDB + JSON Backup       │ │ Express Backend (`server.ts`)      │
-│ • Persists scans, edits, crops & MCQs │ │ • Keeps GEMINI_API_KEY server-only │
-│ • Export / Restore `.json` archives   │ │ • Entailment & Sufficiency Audit   │
-└───────────────────────────────────────┘ └────────────────────────────────────┘
+        ┌──────────────────────────────┴──────────────────────────────┐
+        ▼                                                             ▼
+┌─────────────────────────────────┐         ┌──────────────────────────────────┐
+│   Vercel Serverless Function    │         │    Express Dev/Prod Server       │
+│      (/api/notes/process.ts)    │         │          (server.ts)             │
+│   • maxDuration: 60s            │         │   • Port 3000 + Vite middleware  │
+└───────────────┬─────────────────┘         └─────────────────┬────────────────┘
+                │                                             │
+                └──────────────────────┬──────────────────────┘
+                                       ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                    Shared Core Processor (src/server/...)                    │
+│  • Multimodal Gemini Vision (gemini-3.8-flash)                               │
+│  • Strict JSON response schema enforcement                                   │
+│  • Verbatim Page Transcripts & [unclear] marker audits                       │
+│  • Deterministic Lexical & Semantic Entailment Grounding Check               │
+│  • Source-Only MCQ Traceability Filter                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 4. Implementation Steps
+
+1. **Shared Notes Processor (`src/server/notesProcessor.ts`)**:
+   - Extract the entire Gemini Vision OCR, system instructions, response schema, deterministic lexical grounding check, illegibility flagger, and MCQ traceability auditor into a single reusable TypeScript module.
+2. **Vercel Serverless Functions (`/api/notes/process.ts`, `/api/notes/regenerate-mcqs.ts`)**:
+   - Create standard Vercel serverless request handlers (`(req: VercelRequest, res: VercelResponse)`) that import the shared processor and set proper JSON headers and status codes.
+3. **Vercel Configuration (`vercel.json`)**:
+   - Add root `vercel.json` defining function settings (`maxDuration: 60`) and API routing rules.
+4. **Express Backend Refactoring (`server.ts`)**:
+   - Wire `server.ts` to call the shared processor so local dev and standard full-stack Node environments remain 100% in sync with zero duplicated logic.
+5. **Client-Side Image Optimization (`src/utils/pdfRasterizer.ts`)**:
+   - Add image dimension clamping (max 1600px on the longest edge) and JPEG 85% encoding for all uploaded images and rasterized PDF pages.
+6. **Defensive API Client & Error Messaging (`src/App.tsx`, `src/components/PdfMcqModule.tsx`)**:
+   - Refactor `fetch` handling to check `response.ok`, parse Content-Type, capture raw text on parse error, and present clear messages when `GEMINI_API_KEY` is missing or when network errors occur.
+7. **Build, Lint & Compilation Verification**:
+   - Run `compile_applet` and `lint_applet` together and test local API routes via curl.

@@ -264,17 +264,33 @@ export const PdfMcqModule: React.FC<PdfMcqModuleProps> = ({
           sections: activeUnit.sections,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to regenerate MCQs.');
+      const rawText = await response.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        if (!response.ok) {
+          throw new Error(
+            `Server returned HTTP ${response.status} (${response.statusText || 'Error'}). Ensure the backend serverless route is deployed.`
+          );
+        }
+        throw new Error('Received unexpected non-JSON response from MCQ generator.');
       }
+      if (!response.ok) {
+        const errMsg =
+          typeof data.error === 'object' && data.error?.message
+            ? data.error.message
+            : data.error || data.message || `Failed to regenerate MCQs (HTTP ${response.status}).`;
+        throw new Error(errMsg);
+      }
+      const payloadData = data.data || data;
       setSelectedAnswers({});
       onUpdateUnit({
         ...activeUnit,
-        mcqs: data.mcqs || [],
-        mcqGenerationNote: data.mcqGenerationNote,
+        mcqs: payloadData.mcqs || [],
+        mcqGenerationNote: payloadData.mcqGenerationNote,
       });
-      setMcqStatusNote(data.mcqGenerationNote || 'MCQs updated from verified unit passages.');
+      setMcqStatusNote(payloadData.mcqGenerationNote || 'MCQs updated from verified unit passages.');
     } catch (err: any) {
       setMcqStatusNote(err?.message || 'Could not regenerate MCQs.');
     } finally {
