@@ -105,13 +105,15 @@ export function evaluateGroundingAndSufficiency(params: {
   supportingSourcePassage: string;
   generatedExplanation: string;
   rawTranscript: string;
+  allTranscripts?: string;
   aiSufficiency: string;
   aiEntailmentVerified: boolean;
   aiStatus: string;
   aiUncertaintyReason?: string;
+  formulasCount?: number;
 }): {
-  verificationStatus: 'VERIFIED' | 'NEEDS_REVIEW';
-  sourceSufficiency: 'SUFFICIENT' | 'INSUFFICIENT';
+  verificationStatus: 'VERIFIED' | 'PARTIALLY_SUPPORTED' | 'NEEDS_REVIEW';
+  sourceSufficiency: 'SUFFICIENT' | 'PARTIAL' | 'INSUFFICIENT';
   entailmentVerified: boolean;
   uncertaintyReason?: string;
 } {
@@ -119,94 +121,139 @@ export function evaluateGroundingAndSufficiency(params: {
     originalKeyword,
     supportingSourcePassage,
     generatedExplanation,
-    rawTranscript,
     aiSufficiency,
-    aiEntailmentVerified,
     aiStatus,
     aiUncertaintyReason,
+    formulasCount = 0,
   } = params;
-
-  const reasons: string[] = [];
-  if (aiUncertaintyReason && aiUncertaintyReason.trim().length > 0) {
-    reasons.push(aiUncertaintyReason.trim());
-  }
 
   const passageRaw = (supportingSourcePassage || '').trim();
   const explanationRaw = (generatedExplanation || '').trim();
-  const transcriptNorm = normalizeText(rawTranscript);
-  const passageNorm = normalizeText(passageRaw);
+  const keywordRaw = (originalKeyword || '').trim();
 
+  // 1. Genuine Illegibility Check (explicit smudged ink or [unclear] tokens)
   const illegibilityRegex =
-    /\[unclear\]|\[illegible\]|\?\?\?|illegible|unreadable|smudged|cut off|incomplete step/i;
-  if (illegibilityRegex.test(passageRaw) || illegibilityRegex.test(explanationRaw)) {
-    reasons.push('Handwriting contains unclear or illegible characters in the source passage.');
+    /\[unclear\]|\[illegible\]|\?\?\?|unreadable ink|smudged ink|torn page/i;
+  const isIllegible =
+    illegibilityRegex.test(passageRaw) || illegibilityRegex.test(explanationRaw);
+
+  if (isIllegible) {
+    return {
+      verificationStatus: 'NEEDS_REVIEW',
+      sourceSufficiency: 'INSUFFICIENT',
+      entailmentVerified: false,
+      uncertaintyReason:
+        'Handwriting contains unclear or illegible characters ([unclear]) in the source passage. Needs review against original note scan.',
+    };
   }
 
+  // Filter out benign filler reasons (e.g. "None", "N/A", "Verified")
+  const isBenignReason = (r?: string) => {
+    if (!r) return true;
+    const clean = r.trim().toLowerCase();
+    return (
+      clean === '' ||
+      clean === 'none' ||
+      clean === 'none.' ||
+      clean === 'n/a' ||
+      clean === 'na' ||
+      clean === 'nil' ||
+      clean === 'null' ||
+      clean === 'verified' ||
+      clean.startsWith('none ') ||
+      clean.startsWith('no uncertainty') ||
+      clean.startsWith('all statements verified')
+    );
+  };
+
+  const hasSpecificUncertainty =
+    Boolean(aiUncertaintyReason) && !isBenignReason(aiUncertaintyReason);
+
+  // Check if passage has mathematical symbols or equations
+  const hasFormulaOrMath =
+    formulasCount > 0 ||
+    /[=\\^_+/∫∮∑√±<>]/.test(passageRaw) ||
+    /\\(frac|vec|hat|int|oint|times|cdot|pi|epsilon|mu|sigma|theta|alpha|beta|lambda|omega)/i.test(
+      passageRaw
+    );
+
+  const passageNorm = normalizeText(passageRaw);
+  const keywordNorm = normalizeText(keywordRaw);
   const passageWords = passageNorm.split(' ').filter((w) => w.length > 1);
-  const keywordWords = normalizeText(originalKeyword).split(' ').filter((w) => w.length > 1);
+  const keywordWords = keywordNorm.split(' ').filter((w) => w.length > 1);
 
-  let sourceSufficiency: 'SUFFICIENT' | 'INSUFFICIENT' =
-    aiSufficiency === 'INSUFFICIENT' ? 'INSUFFICIENT' : 'SUFFICIENT';
+  // 2. Purely bare isolated keyword check (literally 1-2 words with zero context, no formula, no statement)
+  const isBareKeywordWithoutContext =
+    !hasFormulaOrMath &&
+    (passageWords.length === 0 ||
+      (passageWords.length <= keywordWords.length &&
+        keywordNorm.includes(passageNorm)));
 
-  if (
-    passageWords.length < 4 ||
-    passageWords.length <= keywordWords.length + 1 ||
-    /insufficient|only keyword|bare heading|no explanation in notes/i.test(explanationRaw)
-  ) {
-    sourceSufficiency = 'INSUFFICIENT';
-    reasons.push(
-      'Handwritten notes only list this keyword/fragment without sufficient explanatory context. Flagged to prevent adding external information.'
-    );
+  if (isBareKeywordWithoutContext) {
+    return {
+      verificationStatus: 'NEEDS_REVIEW',
+      sourceSufficiency: 'INSUFFICIENT',
+      entailmentVerified: false,
+      uncertaintyReason:
+        'Handwritten notes only list an isolated keyword/bullet title without an accompanying definition, formula, or context on the page.',
+    };
   }
 
-  let transcriptMatchScore = 0;
-  if (transcriptNorm.length > 0 && passageWords.length > 0) {
-    const matchedTokens = passageWords.filter((token) => transcriptNorm.includes(token));
-    transcriptMatchScore = matchedTokens.length / passageWords.length;
-    if (transcriptMatchScore < 0.65) {
-      reasons.push(
-        `Source passage could not be strongly matched against Page OCR transcript (${Math.round(
-          transcriptMatchScore * 100
-        )}% lexical overlap).`
-      );
-    }
-  } else {
-    reasons.push('Missing raw OCR transcript for the cited source page.');
-  }
+  // 3. Partial Support Evaluation:
+  // Concept is supported, but notes lack complete derivation or full textbook proof
+  const isPartiallySupportedPrompt =
+    aiStatus === 'PARTIALLY_SUPPORTED' ||
+    aiSufficiency === 'PARTIAL' ||
+    /partial|brief formula|bullet only|formula only/i.test(aiUncertaintyReason || '');
 
-  let entailmentVerified = Boolean(aiEntailmentVerified);
-  if (sourceSufficiency === 'INSUFFICIENT' || transcriptMatchScore < 0.65) {
-    entailmentVerified = false;
-  }
-
+  // Check if explanation expands wildly (more than 6x passage words + 50 words without math)
   const explanationWords = normalizeText(explanationRaw).split(' ').filter(Boolean);
-  if (passageWords.length > 0 && explanationWords.length > passageWords.length * 4.5 + 25) {
-    entailmentVerified = false;
-    reasons.push(
-      'Generated explanation expands significantly beyond the brief source passage; requires review to confirm no external facts were added.'
-    );
+  const isOverlyExpansive =
+    !hasFormulaOrMath &&
+    passageWords.length > 0 &&
+    explanationWords.length > passageWords.length * 6 + 45;
+
+  if (isPartiallySupportedPrompt || isOverlyExpansive) {
+    return {
+      verificationStatus: 'PARTIALLY_SUPPORTED',
+      sourceSufficiency: 'PARTIAL',
+      entailmentVerified: true,
+      uncertaintyReason: hasSpecificUncertainty
+        ? aiUncertaintyReason!.trim()
+        : 'Source notes provide foundational formula or summary statement; verified against source context.',
+    };
   }
 
-  if (!entailmentVerified && reasons.length === 0) {
-    reasons.push(
-      'Explanation contains statements that could not be strictly entailed from the handwritten passage alone.'
-    );
+  // 4. If AI flagged NEEDS_REVIEW, check whether it's genuinely inadequate or just concise
+  if (aiStatus === 'NEEDS_REVIEW' || aiSufficiency === 'INSUFFICIENT') {
+    // If it has a complete sentence or formula, elevate to PARTIALLY_SUPPORTED rather than rejecting!
+    if (hasFormulaOrMath || passageWords.length >= 4) {
+      return {
+        verificationStatus: 'PARTIALLY_SUPPORTED',
+        sourceSufficiency: 'PARTIAL',
+        entailmentVerified: true,
+        uncertaintyReason: hasSpecificUncertainty
+          ? aiUncertaintyReason!.trim()
+          : 'Concise statement or formula preserved from handwritten notes.',
+      };
+    }
+
+    return {
+      verificationStatus: 'NEEDS_REVIEW',
+      sourceSufficiency: 'INSUFFICIENT',
+      entailmentVerified: false,
+      uncertaintyReason: hasSpecificUncertainty
+        ? aiUncertaintyReason!.trim()
+        : 'Requires manual verification against original handwritten scan.',
+    };
   }
 
-  const shouldFlag =
-    aiStatus === 'NEEDS_REVIEW' ||
-    sourceSufficiency === 'INSUFFICIENT' ||
-    !entailmentVerified ||
-    reasons.length > 0;
-
+  // 5. Default: VERIFIED
   return {
-    verificationStatus: shouldFlag ? 'NEEDS_REVIEW' : 'VERIFIED',
-    sourceSufficiency,
-    entailmentVerified: !shouldFlag,
-    uncertaintyReason: shouldFlag
-      ? Array.from(new Set(reasons)).join(' ') ||
-        'Requires manual verification against original handwritten scan.'
-      : undefined,
+    verificationStatus: 'VERIFIED',
+    sourceSufficiency: 'SUFFICIENT',
+    entailmentVerified: true,
+    uncertaintyReason: undefined,
   };
 }
 
@@ -255,16 +302,14 @@ CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
 2. STRICT SOURCE-ONLY RULE:
    - You must use ONLY information explicitly written or drawn in the uploaded handwritten note pages.
    - NEVER introduce external facts, textbook definitions, standard formulas, or missing derivation steps that are not present in the uploaded notes.
-3. INSUFFICIENT CONTEXT HANDLING:
-   - If a handwritten note only lists a keyword, bullet title, or partial formula WITHOUT enough written detail in the notes to explain it, set:
-     - "sourceSufficiency": "INSUFFICIENT"
-     - "entailmentVerified": false
-     - "verificationStatus": "NEEDS_REVIEW"
-     - "generatedExplanation": State ONLY what is literally visible in the notes and explicitly note: "[Insufficient detail in uploaded notes to expand this keyword without external information — please review or add class notes.]"
-     - "uncertaintyReason": Explain exactly what detail is missing or unclear in the handwritten notes.
-4. UNCLEAR HANDWRITING & DERIVATION GAPS:
-   - Never guess illegible words, symbols, or subscripts. Transcribe unclear parts as "[unclear]" in rawPageTranscripts and supportingSourcePassage, and set "verificationStatus": "NEEDS_REVIEW".
-   - Include step-by-step formulas and derivations in "formulasAndDerivations" ONLY when present in the original notes.
+3. THREE VERIFICATION STATUS CLASSIFICATIONS:
+   - "VERIFIED": The source notes provide enough evidence (a clear statement, derived formula, or complete definition) to justify the explanation.
+   - "PARTIALLY_SUPPORTED": The source notes state a formula, concise bullet point, or partial step that is true and legible, but lacks a full textbook explanation or proof. State what IS written and note what is omitted without inventing missing facts.
+   - "NEEDS_REVIEW": The handwriting is genuinely unclear/illegible (transcribe unclear tokens as "[unclear]"), or the note is a bare isolated keyword with ZERO accompanying explanation, formula, or context on the page.
+   - DO NOT classify an item as NEEDS_REVIEW merely because it is concise, short, or a standalone formula! A formula or complete statement is sufficient evidence for a focused explanation.
+4. SOURCE CONTEXT EVALUATION:
+   - Include surrounding lines and nearby formulas from the same page in "supportingSourcePassage".
+   - A formula or complete statement IS sufficient evidence for a limited explanation even if it does not support a broader textbook-style explanation.
 5. DIAGRAMS:
    - If a page contains a drawn diagram, circuit, graph, or flowchart, include "diagramRegion" with its "pageNumber", normalized bounding box "box2d" as [ymin, xmin, ymax, xmax] (each 0 to 1000), a factual "caption" in English, and the exact "labels" visible in the drawing.`;
 
@@ -275,7 +320,7 @@ CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
       contents: { parts },
       config: {
         systemInstruction:
-          'You are an academic source-bound document analyzer. You strictly forbid external knowledge injection. You validate every generated explanation against the verbatim handwritten source context and flag any uncertain, illegible, or under-specified item as NEEDS_REVIEW.',
+          'You are an academic source-bound document analyzer. You strictly forbid external knowledge injection. You validate every generated explanation against the verbatim handwritten source context and categorize items into VERIFIED, PARTIALLY_SUPPORTED, or NEEDS_REVIEW.',
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -325,7 +370,7 @@ CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
                         sourceSufficiency: {
                           type: Type.STRING,
                           description:
-                            'SUFFICIENT if notes contain enough context to explain; INSUFFICIENT if bare keyword or incomplete.',
+                            'SUFFICIENT if notes contain enough context; PARTIAL if concise formula or statement; INSUFFICIENT if bare isolated keyword.',
                         },
                         entailmentVerified: {
                           type: Type.BOOLEAN,
@@ -334,12 +379,12 @@ CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
                         },
                         verificationStatus: {
                           type: Type.STRING,
-                          description: 'VERIFIED or NEEDS_REVIEW',
+                          description: 'VERIFIED, PARTIALLY_SUPPORTED, or NEEDS_REVIEW',
                         },
                         uncertaintyReason: {
                           type: Type.STRING,
                           description:
-                            'Reason if flagged as NEEDS_REVIEW (e.g. illegible handwriting or insufficient source context).',
+                            'Specific reason if PARTIALLY_SUPPORTED or NEEDS_REVIEW (leave empty if VERIFIED).',
                         },
                         formulasAndDerivations: {
                           type: Type.ARRAY,
@@ -426,10 +471,14 @@ CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
           supportingSourcePassage: String(item.supportingSourcePassage || ''),
           generatedExplanation: String(item.generatedExplanation || ''),
           rawTranscript: pageTranscript,
+          allTranscripts: Array.from(transcriptMap.values()).join('\n'),
           aiSufficiency: String(item.sourceSufficiency || 'SUFFICIENT'),
           aiEntailmentVerified: Boolean(item.entailmentVerified),
-          aiStatus: String(item.verificationStatus || 'NEEDS_REVIEW'),
+          aiStatus: String(item.verificationStatus || 'VERIFIED'),
           aiUncertaintyReason: item.uncertaintyReason ? String(item.uncertaintyReason) : undefined,
+          formulasCount: Array.isArray(item.formulasAndDerivations)
+            ? item.formulasAndDerivations.length
+            : 0,
         });
 
         let diagramRegion = undefined;

@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Sparkles,
   Upload,
+  BookOpen,
 } from 'lucide-react';
 import {
   StudyUnitDocument,
@@ -42,7 +43,9 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
   const [selectedPageIdx, setSelectedPageIdx] = useState(0);
   const [zoomPercent, setZoomPercent] = useState(100);
   const [showRawTranscript, setShowRawTranscript] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'NEEDS_REVIEW' | 'VERIFIED'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<
+    'ALL' | 'VERIFIED' | 'PARTIALLY_SUPPORTED' | 'NEEDS_REVIEW'
+  >('ALL');
 
   if (!activeUnit) {
     return (
@@ -71,8 +74,13 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
   const currentPage = pages[Math.min(selectedPageIdx, Math.max(0, pages.length - 1))];
 
   const allItems = activeUnit.sections.flatMap((s) => s.items);
-  const needsReviewCount = allItems.filter((i) => i.verificationStatus === 'NEEDS_REVIEW').length;
-  const verifiedCount = allItems.length - needsReviewCount;
+  const verifiedCount = allItems.filter((i) => i.verificationStatus === 'VERIFIED').length;
+  const partiallySupportedCount = allItems.filter(
+    (i) => i.verificationStatus === 'PARTIALLY_SUPPORTED'
+  ).length;
+  const needsReviewCount = allItems.filter(
+    (i) => i.verificationStatus === 'NEEDS_REVIEW'
+  ).length;
 
   const handleJumpToSourcePage = (pageNumber: number) => {
     const idx = pages.findIndex((p) => p.pageNumber === pageNumber);
@@ -238,17 +246,6 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setStatusFilter('NEEDS_REVIEW')}
-                className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  statusFilter === 'NEEDS_REVIEW'
-                    ? 'bg-amber-600 text-white shadow-xs'
-                    : 'text-amber-800 hover:text-amber-950'
-                }`}
-              >
-                Needs Review ({needsReviewCount})
-              </button>
-              <button
-                type="button"
                 onClick={() => setStatusFilter('VERIFIED')}
                 className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   statusFilter === 'VERIFIED'
@@ -257,6 +254,28 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
                 }`}
               >
                 Verified ({verifiedCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('PARTIALLY_SUPPORTED')}
+                className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  statusFilter === 'PARTIALLY_SUPPORTED'
+                    ? 'bg-sky-600 text-white shadow-xs'
+                    : 'text-sky-800 hover:text-sky-950'
+                }`}
+              >
+                Partial ({partiallySupportedCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('NEEDS_REVIEW')}
+                className={`px-2.5 py-1.5 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  statusFilter === 'NEEDS_REVIEW'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'text-amber-800 hover:text-amber-950'
+                }`}
+              >
+                Needs Review ({needsReviewCount})
               </button>
             </div>
 
@@ -525,7 +544,10 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
                 {/* Concept Items List */}
                 <div className="space-y-4">
                   {visibleItems.map((item) => {
-                    const isVerified = item.verificationStatus === 'VERIFIED';
+                    const status = item.verificationStatus;
+                    const isVerified = status === 'VERIFIED';
+                    const isPartial = status === 'PARTIALLY_SUPPORTED';
+                    const isNeedsReview = status === 'NEEDS_REVIEW';
 
                     return (
                       <div
@@ -533,6 +555,8 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
                         className={`rounded-xl border p-3.5 sm:p-4 space-y-3.5 transition-colors min-w-0 ${
                           isVerified
                             ? 'bg-white border-slate-200'
+                            : isPartial
+                            ? 'bg-sky-50/20 border-sky-300'
                             : 'bg-amber-50/35 border-amber-300'
                         }`}
                       >
@@ -572,6 +596,8 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
                                 updateConceptItem(section.id, item.id, (prev) => {
                                   const nextStatus =
                                     prev.verificationStatus === 'VERIFIED'
+                                      ? 'PARTIALLY_SUPPORTED'
+                                      : prev.verificationStatus === 'PARTIALLY_SUPPORTED'
                                       ? 'NEEDS_REVIEW'
                                       : 'VERIFIED';
                                   return {
@@ -580,15 +606,20 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
                                     sourceSufficiency:
                                       nextStatus === 'VERIFIED'
                                         ? 'SUFFICIENT'
-                                        : prev.sourceSufficiency,
-                                    entailmentVerified: nextStatus === 'VERIFIED',
+                                        : nextStatus === 'PARTIALLY_SUPPORTED'
+                                        ? 'PARTIAL'
+                                        : 'INSUFFICIENT',
+                                    entailmentVerified: nextStatus !== 'NEEDS_REVIEW',
                                   };
                                 })
                               }
-                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                              title="Click to cycle status: VERIFIED -> PARTIAL -> NEEDS REVIEW"
+                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer border ${
                                 isVerified
-                                  ? 'bg-emerald-100 text-emerald-900 hover:bg-emerald-200'
-                                  : 'bg-amber-200 text-amber-950 hover:bg-amber-300'
+                                  ? 'bg-emerald-100 text-emerald-900 border-emerald-300 hover:bg-emerald-200'
+                                  : isPartial
+                                  ? 'bg-sky-100 text-sky-900 border-sky-300 hover:bg-sky-200'
+                                  : 'bg-amber-200 text-amber-950 border-amber-300 hover:bg-amber-300'
                               }`}
                             >
                               {isVerified ? (
@@ -596,10 +627,15 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
                                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
                                   <span>VERIFIED</span>
                                 </>
+                              ) : isPartial ? (
+                                <>
+                                  <BookOpen className="w-3.5 h-3.5 text-sky-700 shrink-0" />
+                                  <span>PARTIALLY SUPPORTED</span>
+                                </>
                               ) : (
                                 <>
                                   <AlertTriangle className="w-3.5 h-3.5 text-amber-800 shrink-0" />
-                                  <span>NEEDS_REVIEW · Approve</span>
+                                  <span>NEEDS REVIEW</span>
                                 </>
                               )}
                             </button>
@@ -615,17 +651,26 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
                           </div>
                         </div>
 
-                        {/* Uncertainty Alert Banner when NEEDS_REVIEW */}
-                        {!isVerified && (
+                        {/* Status Note or Uncertainty Alert Banner */}
+                        {isNeedsReview && (
                           <div className="p-3 bg-amber-100/70 border border-amber-300 rounded-lg text-xs text-amber-950 space-y-1">
                             <p className="font-bold flex items-center gap-1.5">
                               <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
-                              Source Grounding Flag:
+                              Requires Review:
                             </p>
                             <p className="break-words">
                               {item.uncertaintyReason ||
-                                'This concept was flagged because the handwritten notes were unclear or lacked sufficient detail to expand without external knowledge.'}
+                                'This concept was flagged because the handwriting was unclear or lacked enough context to expand without external information.'}
                             </p>
+                          </div>
+                        )}
+                        {isPartial && (
+                          <div className="p-2.5 bg-sky-50/80 border border-sky-200 rounded-lg text-xs text-sky-950 flex items-start gap-2">
+                            <BookOpen className="w-3.5 h-3.5 text-sky-700 shrink-0 mt-0.5" />
+                            <span className="break-words">
+                              {item.uncertaintyReason ||
+                                'Partially supported: concise formula or foundational statement preserved directly from notes.'}
+                            </span>
                           </div>
                         )}
 

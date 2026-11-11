@@ -64,6 +64,9 @@ export const AiProcessingModule: React.FC<AiProcessingModuleProps> = ({
 }) => {
   const allItems = activeUnit ? activeUnit.sections.flatMap((s) => s.items) : [];
   const verifiedItems = allItems.filter((i) => i.verificationStatus === 'VERIFIED');
+  const partiallySupportedItems = allItems.filter(
+    (i) => i.verificationStatus === 'PARTIALLY_SUPPORTED'
+  );
   const flaggedItems = allItems.filter((i) => i.verificationStatus === 'NEEDS_REVIEW');
 
   return (
@@ -247,7 +250,7 @@ export const AiProcessingModule: React.FC<AiProcessingModuleProps> = ({
             </span>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg">
               <p className="text-xs text-slate-500">Preserved Keywords</p>
               <p className="text-xl font-bold text-slate-900 font-mono tabular-nums mt-1">
@@ -260,15 +263,21 @@ export const AiProcessingModule: React.FC<AiProcessingModuleProps> = ({
                 {verifiedItems.length}
               </p>
             </div>
+            <div className="p-3.5 bg-sky-50/60 border border-sky-200 rounded-lg">
+              <p className="text-xs text-sky-800">Partially Supported</p>
+              <p className="text-xl font-bold text-sky-700 font-mono tabular-nums mt-1">
+                {partiallySupportedItems.length}
+              </p>
+            </div>
             <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-lg">
               <p className="text-xs text-amber-900">Flagged NEEDS_REVIEW</p>
               <p className="text-xl font-bold text-amber-700 font-mono tabular-nums mt-1">
                 {flaggedItems.length}
               </p>
             </div>
-            <div className="p-3.5 bg-sky-50/60 border border-sky-200 rounded-lg">
-              <p className="text-xs text-sky-900">Traceable MCQs</p>
-              <p className="text-xl font-bold text-sky-700 font-mono tabular-nums mt-1">
+            <div className="p-3.5 bg-purple-50/60 border border-purple-200 rounded-lg">
+              <p className="text-xs text-purple-900">Traceable MCQs</p>
+              <p className="text-xl font-bold text-purple-700 font-mono tabular-nums mt-1">
                 {activeUnit.mcqs.length}
               </p>
             </div>

@@ -135,7 +135,25 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
       ),
     0
   );
-  const totalPendingReviews = totalConcepts - totalVerified;
+  const totalPartiallySupported = units.reduce(
+    (sum, u) =>
+      sum +
+      u.sections.reduce(
+        (sSum, s) => sSum + s.items.filter((i) => i.verificationStatus === 'PARTIALLY_SUPPORTED').length,
+        0
+      ),
+    0
+  );
+  const totalNeedsReview = units.reduce(
+    (sum, u) =>
+      sum +
+      u.sections.reduce(
+        (sSum, s) => sSum + s.items.filter((i) => i.verificationStatus === 'NEEDS_REVIEW').length,
+        0
+      ),
+    0
+  );
+  const totalPendingReviews = totalNeedsReview;
   const totalMcqs = units.reduce((sum, u) => sum + (u.mcqs?.length || 0), 0);
 
   const handleBackupExportClick = async () => {
@@ -367,35 +385,41 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
           </div>
         )}
 
-        {/* 5 Core Library Metrics Strip (All 0 on fresh install) */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 mt-5 pt-5 border-t border-slate-200">
+        {/* Core Library Metrics Strip (All 0 on fresh install) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mt-5 pt-5 border-t border-slate-200">
           <div className="p-3 bg-slate-50/70 rounded-lg border border-slate-100">
-            <p className="text-xs text-slate-500">Saved Study Units</p>
+            <p className="text-xs text-slate-500">Saved Units</p>
             <p className="text-xl sm:text-2xl font-bold text-slate-900 font-mono tabular-nums mt-0.5">
               {totalSavedUnits}
             </p>
           </div>
           <div className="p-3 bg-slate-50/70 rounded-lg border border-slate-100">
-            <p className="text-xs text-slate-500">Uploaded Documents</p>
+            <p className="text-xs text-slate-500">Uploaded Docs</p>
             <p className="text-xl sm:text-2xl font-bold text-slate-900 font-mono tabular-nums mt-0.5">
               {totalUploadedDocs}
             </p>
           </div>
           <div className="p-3 bg-slate-50/70 rounded-lg border border-slate-100">
-            <p className="text-xs text-slate-500">Verified Concepts</p>
+            <p className="text-xs text-slate-500">Verified</p>
             <p className="text-xl sm:text-2xl font-bold text-emerald-700 font-mono tabular-nums mt-0.5">
               {totalVerified}
             </p>
           </div>
           <div className="p-3 bg-slate-50/70 rounded-lg border border-slate-100">
-            <p className="text-xs text-slate-500">Pending Reviews</p>
+            <p className="text-xs text-slate-500">Partially Supported</p>
+            <p className="text-xl sm:text-2xl font-bold text-sky-700 font-mono tabular-nums mt-0.5">
+              {totalPartiallySupported}
+            </p>
+          </div>
+          <div className="p-3 bg-slate-50/70 rounded-lg border border-slate-100">
+            <p className="text-xs text-slate-500">Needs Review</p>
             <p className="text-xl sm:text-2xl font-bold text-amber-700 font-mono tabular-nums mt-0.5">
               {totalPendingReviews}
             </p>
           </div>
-          <div className="p-3 bg-slate-50/70 rounded-lg border border-slate-100 col-span-2 sm:col-span-1">
-            <p className="text-xs text-slate-500">Generated MCQs</p>
-            <p className="text-xl sm:text-2xl font-bold text-sky-700 font-mono tabular-nums mt-0.5">
+          <div className="p-3 bg-slate-50/70 rounded-lg border border-slate-100">
+            <p className="text-xs text-slate-500">Practice MCQs</p>
+            <p className="text-xl sm:text-2xl font-bold text-indigo-700 font-mono tabular-nums mt-0.5">
               {totalMcqs}
             </p>
           </div>

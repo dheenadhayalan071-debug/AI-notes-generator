@@ -71,7 +71,10 @@ export default function App() {
           setUnits(storedUnits);
           setSavedSubjects(storedSubjects);
           if (storedUnits.length > 0) {
-            setActiveUnitId(storedUnits[0].id);
+            setActiveUnitId((prevId) => {
+              if (prevId && storedUnits.some((u) => u.id === prevId)) return prevId;
+              return storedUnits[0].id;
+            });
           }
         }
       } catch (err) {
@@ -81,10 +84,19 @@ export default function App() {
       }
     }
     initLibrary();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && !isProcessing) {
+        initLibrary();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       mounted = false;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, []);
+  }, [isProcessing]);
 
   const activeUnit = units.find((u) => u.id === activeUnitId) || units[0];
 
@@ -287,6 +299,11 @@ export default function App() {
       setActiveUnitId(saved.id);
       setUploadedPages([]);
       setProcessingStageIndex(4);
+
+      // Automatically transition to the Study Editor so returning users immediately see their results
+      setTimeout(() => {
+        setActiveModule('editor');
+      }, 1200);
 
       // Start asynchronous Stage 05 MCQ synthesis independently in the background
       handleSynthesizeMcqsForUnit(saved);

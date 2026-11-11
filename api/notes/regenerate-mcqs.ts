@@ -107,17 +107,21 @@ export async function regenerateMcqsCore(payload: RegenerateMcqsPayload) {
     throw new Error('Study sections are required to generate MCQs.');
   }
 
-  // 1. Gather all verified concepts with sufficient handwritten source text
+  // 1. Gather all verified & partially supported concepts with legible handwritten source text
   const verifiedItems = sections.flatMap((sec: any) =>
     (sec.items || []).filter(
       (item: any) =>
-        item.verificationStatus === 'VERIFIED' &&
+        (item.verificationStatus === 'VERIFIED' ||
+          item.verificationStatus === 'PARTIALLY_SUPPORTED') &&
         item.sourceSufficiency !== 'INSUFFICIENT' &&
-        String(item.supportingSourcePassage || '').trim().length >= 10
+        String(item.supportingSourcePassage || '').trim().length >= 8 &&
+        !/\[unclear\]|\[illegible\]/i.test(item.supportingSourcePassage || '')
     )
   );
 
-  console.log(`[MCQ Engine] Found ${verifiedItems.length} eligible verified concept(s) for ${subject} Unit ${unitNumber}`);
+  console.log(
+    `[MCQ Engine] Found ${verifiedItems.length} eligible concept(s) (VERIFIED or PARTIALLY_SUPPORTED) for ${subject} Unit ${unitNumber}`
+  );
 
   if (verifiedItems.length === 0) {
     return {

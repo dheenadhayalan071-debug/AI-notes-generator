@@ -29,7 +29,7 @@ function buildA4SheetHtml(params: {
       <div style="padding-top: 10px; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; font-size: 11px; color: #cbd5e1; font-family: monospace;">
         <span>Source Pages: ${unit.sourcePages.length}</span>
         <span>Verified Concepts: ${unit.sections.reduce(
-          (acc, s) => acc + s.items.filter((i) => i.verificationStatus === 'VERIFIED').length,
+          (acc, s) => acc + s.items.filter((i) => i.verificationStatus === 'VERIFIED' || i.verificationStatus === 'PARTIALLY_SUPPORTED').length,
           0
         )} / ${unit.sections.reduce((acc, s) => acc + s.items.length, 0)}</span>
         <span>Date: ${new Date(unit.updatedAt).toLocaleDateString()}</span>
@@ -110,8 +110,10 @@ function buildSectionHeaderHtml(heading: string, subheading?: string): string {
  */
 function buildConceptItemHtml(item: any): string {
   const isVerified = item.verificationStatus === 'VERIFIED';
-  const badgeBg = isVerified ? '#e0f2fe' : '#fef3c7';
-  const badgeColor = isVerified ? '#0369a1' : '#b45309';
+  const isPartial = item.verificationStatus === 'PARTIALLY_SUPPORTED';
+  const badgeBg = isVerified ? '#e0f2fe' : isPartial ? '#f0f9ff' : '#fef3c7';
+  const badgeColor = isVerified ? '#0369a1' : isPartial ? '#0284c7' : '#b45309';
+  const statusLabel = isVerified ? 'VERIFIED' : isPartial ? 'PARTIALLY SUPPORTED' : 'NEEDS REVIEW';
 
   let formulasHtml = '';
   if (item.formulasAndDerivations && item.formulasAndDerivations.length > 0) {
@@ -185,7 +187,7 @@ function buildConceptItemHtml(item: any): string {
           ${escapeHtml(item.originalKeyword)}
         </span>
         <span style="font-size: 11px; font-family: monospace; color: #64748b;">
-          Source Page ${item.sourcePageReference} &bull; ${item.verificationStatus}
+          Source Page ${item.sourcePageReference} &bull; ${statusLabel}
         </span>
       </div>
 

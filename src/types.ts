@@ -1,8 +1,8 @@
 export type ModuleId = 'dashboard' | 'upload' | 'processing' | 'editor' | 'pdf_mcq';
 
-export type VerificationStatus = 'VERIFIED' | 'NEEDS_REVIEW';
+export type VerificationStatus = 'VERIFIED' | 'PARTIALLY_SUPPORTED' | 'NEEDS_REVIEW';
 
-export type SourceSufficiency = 'SUFFICIENT' | 'INSUFFICIENT';
+export type SourceSufficiency = 'SUFFICIENT' | 'PARTIAL' | 'INSUFFICIENT';
 
 export type BackupRestoreMode = 'merge' | 'replace';
 
