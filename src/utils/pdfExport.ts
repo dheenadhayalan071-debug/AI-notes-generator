@@ -1,412 +1,411 @@
 import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
 import { StudyUnitDocument } from '../types';
+import { renderMathToHtml, renderTextWithMathToHtml, sanitizeLatex } from './mathRenderer';
 
 /**
- * Strips non-ASCII characters that standard jsPDF Helvetica fonts cannot render natively,
- * while preserving transliterated text or safe mathematical symbols so PDFs never show garbled glyphs.
+ * Creates a clean, styled HTML string for an A4 page element with KaTeX mathematical formulas,
+ * sharp academic typography, verified badges, diagrams, and sequential page footers.
  */
-function toPdfSafeText(input: string): string {
-  if (!input) return '';
-  return input
-    .replace(/×/g, 'x')
-    .replace(/÷/g, '/')
-    .replace(/±/g, '+/-')
-    .replace(/≈/g, '~=')
-    .replace(/≠/g, '!=')
-    .replace(/≤/g, '<=')
-    .replace(/≥/g, '>=')
-    .replace(/→/g, '->')
-    .replace(/←/g, '<-')
-    .replace(/↔/g, '<->')
-    .replace(/∮/g, 'oint')
-    .replace(/∫/g, 'int')
-    .replace(/∑/g, 'sum')
-    .replace(/Δ/g, 'Delta ')
-    .replace(/Φ/g, 'Phi')
-    .replace(/π/g, 'pi')
-    .replace(/ε/g, 'epsilon')
-    .replace(/₀/g, '_0')
-    .replace(/₁/g, '_1')
-    .replace(/₂/g, '_2')
-    .replace(/₃/g, '_3')
-    .replace(/²/g, '^2')
-    .replace(/³/g, '^3')
-    .replace(/⁻¹/g, '^-1')
-    .replace(/⁻²/g, '^-2')
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-    .replace(/—/g, ' - ')
-    .replace(/–/g, '-')
-    .replace(/•/g, '-')
-    // Preserve printable ASCII; if non-ASCII script (e.g. Tamil script) is present without ASCII, keep transliteration note
-    .replace(/[^\x20-\x7E\n]/g, '');
+function buildA4SheetHtml(params: {
+  unit: StudyUnitDocument;
+  isFirstPage: boolean;
+  pageNumber: number;
+  totalPages: number;
+  blocksHtml: string;
+}): string {
+  const { unit, isFirstPage, pageNumber, totalPages, blocksHtml } = params;
+
+  const headerHtml = isFirstPage
+    ? `
+    <div style="background-color: #0f172a; color: #ffffff; border-radius: 8px; padding: 22px 24px; margin-bottom: 22px;">
+      <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: #38bdf8; letter-spacing: 0.05em; font-family: monospace; margin-bottom: 8px;">
+        <span>${escapeHtml(unit.subject.toUpperCase())} &bull; UNIT ${unit.unitNumber} STUDY MATERIAL</span>
+        <span>SOURCE-VERIFIED EDITION</span>
+      </div>
+      <h1 style="font-size: 24px; font-weight: 800; line-height: 1.25; margin: 0 0 10px 0; color: #ffffff; font-family: 'Plus Jakarta Sans', system-ui, sans-serif;">
+        Unit ${unit.unitNumber}: ${escapeHtml(unit.unitTitle)}
+      </h1>
+      <div style="padding-top: 10px; border-top: 1px solid #1e293b; display: flex; justify-content: space-between; font-size: 11px; color: #cbd5e1; font-family: monospace;">
+        <span>Source Pages: ${unit.sourcePages.length}</span>
+        <span>Verified Concepts: ${unit.sections.reduce(
+          (acc, s) => acc + s.items.filter((i) => i.verificationStatus === 'VERIFIED').length,
+          0
+        )} / ${unit.sections.reduce((acc, s) => acc + s.items.length, 0)}</span>
+        <span>Date: ${new Date(unit.updatedAt).toLocaleDateString()}</span>
+      </div>
+    </div>
+    `
+    : `
+    <div style="border-bottom: 2px solid #0f172a; padding-bottom: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: #475569; font-family: monospace;">
+      <span>${escapeHtml(unit.subject.toUpperCase())} &bull; UNIT ${unit.unitNumber}: ${escapeHtml(unit.unitTitle)}</span>
+      <span>PAGE ${pageNumber} OF ${totalPages}</span>
+    </div>
+    `;
+
+  const footerHtml = `
+    <div style="margin-top: 24px; padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; font-size: 10.5px; color: #64748b; font-family: monospace;">
+      <span>${escapeHtml(unit.subject)} &bull; Unit ${unit.unitNumber} (Source-Verified Study Material)</span>
+      <span>Page ${pageNumber} of ${totalPages}</span>
+    </div>
+  `;
+
+  return `
+    <div class="a4-render-page" style="
+      width: 794px;
+      min-height: 1123px;
+      box-sizing: border-box;
+      padding: 40px 42px;
+      background-color: #ffffff;
+      color: #0f172a;
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+    ">
+      <div>
+        ${headerHtml}
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+          ${blocksHtml}
+        </div>
+      </div>
+      ${footerHtml}
+    </div>
+  `;
+}
+
+function escapeHtml(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
- * Generates and triggers a binary .pdf file download for a specific StudyUnitDocument.
- * Compatible with Android mobile browsers, desktop browsers, and sandboxed iframes.
+ * Builds HTML for a section header
+ */
+function buildSectionHeaderHtml(heading: string, subheading?: string): string {
+  return `
+    <div style="border-bottom: 1.5px solid #cbd5e1; padding-bottom: 6px; margin-top: 8px;">
+      <h2 style="font-size: 16px; font-weight: 800; color: #0f172a; margin: 0 0 2px 0; font-family: 'Plus Jakarta Sans', system-ui, sans-serif;">
+        ${escapeHtml(heading)}
+      </h2>
+      ${
+        subheading
+          ? `<p style="font-size: 12px; color: #475569; font-style: italic; margin: 0;">${escapeHtml(subheading)}</p>`
+          : ''
+      }
+    </div>
+  `;
+}
+
+/**
+ * Builds HTML for a verified concept item with KaTeX mathematical formulas
+ */
+function buildConceptItemHtml(item: any): string {
+  const isVerified = item.verificationStatus === 'VERIFIED';
+  const badgeBg = isVerified ? '#e0f2fe' : '#fef3c7';
+  const badgeColor = isVerified ? '#0369a1' : '#b45309';
+
+  let formulasHtml = '';
+  if (item.formulasAndDerivations && item.formulasAndDerivations.length > 0) {
+    const stepsHtml = item.formulasAndDerivations
+      .map((st: any) => {
+        const mathRendered = renderMathToHtml(st.expression, true);
+        return `
+          <div style="margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed #e2e8f0;">
+            <div style="font-size: 11px; font-weight: 700; color: #0369a1; font-family: monospace; margin-bottom: 4px;">
+              Step ${st.stepNumber}:
+            </div>
+            <div style="background-color: #ffffff; padding: 6px 12px; border-radius: 6px; border: 1px solid #e2e8f0; margin-bottom: 4px; overflow-x: auto;">
+              ${mathRendered}
+            </div>
+            ${
+              st.explanation
+                ? `<div style="font-size: 12px; color: #475569; font-style: italic; padding-left: 4px;">&bull; ${escapeHtml(
+                    st.explanation
+                  )}</div>`
+                : ''
+            }
+          </div>
+        `;
+      })
+      .join('');
+
+    formulasHtml = `
+      <div style="background-color: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 12px 14px; margin-top: 10px;">
+        <div style="font-size: 11px; font-weight: 800; color: #0369a1; font-family: monospace; letter-spacing: 0.04em; margin-bottom: 8px;">
+          FORMULAS & STEP-BY-STEP DERIVATION:
+        </div>
+        ${stepsHtml}
+      </div>
+    `;
+  }
+
+  let diagramHtml = '';
+  if (item.diagramRegion) {
+    const diag = item.diagramRegion;
+    diagramHtml = `
+      <div style="border: 1px solid #cbd5e1; background-color: #fafaf9; border-radius: 8px; padding: 12px; margin-top: 10px; display: flex; gap: 16px; align-items: center;">
+        ${
+          diag.croppedDataUrl
+            ? `<div style="width: 180px; height: 110px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px; display: flex; align-items: center; justify-content: center; overflow: hidden; shrink: 0;">
+                <img src="${diag.croppedDataUrl}" alt="${escapeHtml(diag.caption)}" style="max-width: 100%; max-height: 100%; object-fit: contain;" />
+              </div>`
+            : ''
+        }
+        <div style="flex: 1; font-size: 12px;">
+          <div style="font-weight: 700; color: #0f172a; margin-bottom: 4px;">
+            Diagram (Source Page ${diag.pageNumber}): ${escapeHtml(diag.caption)}
+          </div>
+          ${
+            diag.labels && diag.labels.length > 0
+              ? `<div style="font-family: monospace; font-size: 11px; color: #475569;">
+                  Labels: ${escapeHtml(diag.labels.join(' | '))}
+                </div>`
+              : ''
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  const explanationHtml = renderTextWithMathToHtml(item.generatedExplanation);
+
+  return `
+    <div style="border-bottom: 1px solid #f1f5f9; padding-bottom: 14px; margin-bottom: 6px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <span style="background-color: ${badgeBg}; color: ${badgeColor}; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 800; letter-spacing: 0.02em;">
+          ${escapeHtml(item.originalKeyword)}
+        </span>
+        <span style="font-size: 11px; font-family: monospace; color: #64748b;">
+          Source Page ${item.sourcePageReference} &bull; ${item.verificationStatus}
+        </span>
+      </div>
+
+      <div style="font-size: 11.5px; font-style: italic; color: #475569; background-color: #f8fafc; padding: 6px 10px; border-radius: 6px; border-left: 3px solid #cbd5e1; margin-bottom: 8px;">
+        Source Note (Page ${item.sourcePageReference}): &ldquo;${escapeHtml(item.supportingSourcePassage)}&rdquo;
+      </div>
+
+      <div style="font-size: 13.5px; color: #1e293b; line-height: 1.65; margin-bottom: 6px;">
+        ${explanationHtml}
+      </div>
+
+      ${formulasHtml}
+      ${diagramHtml}
+    </div>
+  `;
+}
+
+/**
+ * Builds HTML for a practice MCQ block
+ */
+function buildMcqBlockHtml(mcqs: any[]): string {
+  const itemsHtml = mcqs
+    .map((mcq, idx) => {
+      const qHtml = renderTextWithMathToHtml(mcq.question);
+      const expHtml = renderTextWithMathToHtml(mcq.explanation);
+      const optLetters = ['A', 'B', 'C', 'D'];
+
+      const optionsHtml = mcq.options
+        .map((opt: string, oIdx: number) => {
+          return `
+            <div style="padding: 4px 8px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 12px;">
+              <span style="font-weight: 700; color: #0f172a; margin-right: 4px;">(${optLetters[oIdx]})</span>
+              ${renderTextWithMathToHtml(opt)}
+            </div>
+          `;
+        })
+        .join('');
+
+      return `
+        <div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; font-size: 12.5px;">
+          <div style="font-weight: 700; color: #0f172a; margin-bottom: 8px;">
+            Q${idx + 1}. ${qHtml}
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+            ${optionsHtml}
+          </div>
+          <div style="font-size: 11.5px; color: #065f46; background-color: #ecfdf5; padding: 6px 10px; border-radius: 6px; border: 1px solid #a7f3d0;">
+            <span style="font-weight: 700;">Answer: (${optLetters[mcq.correctIndex]})</span> &mdash; ${expHtml}
+            <span style="color: #64748b; font-family: monospace; display: block; margin-top: 2px;">
+              [Source Page ${mcq.sourcePageReference}: &ldquo;${escapeHtml(mcq.supportingSourcePassage)}&rdquo;]
+            </span>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  return `
+    <div style="margin-top: 14px;">
+      <div style="background-color: #e0f2fe; border: 1px solid #bae6fd; border-radius: 8px; padding: 8px 14px; margin-bottom: 12px; font-size: 13px; font-weight: 800; color: #0369a1; font-family: monospace;">
+        SOURCE-VERIFIED PRACTICE MCQS (${mcqs.length} QUESTIONS)
+      </div>
+      ${itemsHtml}
+    </div>
+  `;
+}
+
+/**
+ * Downloads a publication-quality A4 PDF with mathematical rendering (via KaTeX),
+ * balanced page distribution, exact 'Page X of Y' numbering, and diagram embedding.
  */
 export async function downloadUnitStudyPdf(
   unit: StudyUnitDocument,
   includeMcqs: boolean = true
 ): Promise<string> {
+  // Step 1: Divide content into discrete pages to prevent overflowing and awkward page breaks
+  interface PageBlock {
+    type: 'section_header' | 'concept_item' | 'mcq_block';
+    html: string;
+    weight: number;
+  }
+
+  const rawBlocks: PageBlock[] = [];
+
+  for (const section of unit.sections) {
+    rawBlocks.push({
+      type: 'section_header',
+      html: buildSectionHeaderHtml(section.heading, section.subheading),
+      weight: 65,
+    });
+
+    for (const item of section.items) {
+      let weight = 120;
+      if (item.formulasAndDerivations && item.formulasAndDerivations.length > 0) {
+        weight += item.formulasAndDerivations.length * 50;
+      }
+      if (item.diagramRegion) {
+        weight += 140;
+      }
+      if (item.generatedExplanation && item.generatedExplanation.length > 250) {
+        weight += Math.min(100, Math.floor(item.generatedExplanation.length / 5));
+      }
+
+      rawBlocks.push({
+        type: 'concept_item',
+        html: buildConceptItemHtml(item),
+        weight,
+      });
+    }
+  }
+
+  if (includeMcqs && unit.mcqs && unit.mcqs.length > 0) {
+    // Break MCQs into reasonable chunks (2-3 MCQs per block)
+    const mcqChunkSize = 2;
+    for (let m = 0; m < unit.mcqs.length; m += mcqChunkSize) {
+      const slice = unit.mcqs.slice(m, m + mcqChunkSize);
+      rawBlocks.push({
+        type: 'mcq_block',
+        html: buildMcqBlockHtml(slice),
+        weight: 180 * slice.length,
+      });
+    }
+  }
+
+  // Step 2: Bin pack blocks into discrete A4 sheets
+  const pagesHtml: string[] = [];
+  let currentPageBlocks: string[] = [];
+  let currentWeight = 260; // cover weight on Page 1
+  const maxPageCapacity = 820;
+
+  for (const block of rawBlocks) {
+    if (currentWeight + block.weight > maxPageCapacity && currentPageBlocks.length > 0) {
+      pagesHtml.push(currentPageBlocks.join(''));
+      currentPageBlocks = [];
+      currentWeight = 60; // running header weight on Page 2+
+    }
+    currentPageBlocks.push(block.html);
+    currentWeight += block.weight;
+  }
+
+  if (currentPageBlocks.length > 0 || pagesHtml.length === 0) {
+    pagesHtml.push(currentPageBlocks.join(''));
+  }
+
+  const totalPages = pagesHtml.length;
+
+  // Step 3: Render pages inside a hidden DOM container with full KaTeX stylesheets
+  const container = document.createElement('div');
+  container.style.position = 'fixed';
+  container.style.top = '-99999px';
+  container.style.left = '-99999px';
+  container.style.width = '794px';
+  container.style.backgroundColor = '#ffffff';
+  document.body.appendChild(container);
+
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4',
   });
 
-  const pageWidth = doc.internal.pageSize.getWidth(); // 210mm
-  const pageHeight = doc.internal.pageSize.getHeight(); // 297mm
-  const marginX = 16;
-  const contentWidth = pageWidth - marginX * 2;
-  let cursorY = 20;
+  const a4WidthMm = 210;
+  const a4HeightMm = 297;
 
-  const ensureSpace = (neededMm: number) => {
-    if (cursorY + neededMm > pageHeight - 18) {
-      doc.addPage();
-      cursorY = 20;
-    }
-  };
-
-  // --- TOP ACADEMIC BANNER ---
-  doc.setFillColor(15, 23, 42); // #0F172A
-  doc.rect(marginX, cursorY, contentWidth, 28, 'F');
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
-  doc.setTextColor(56, 189, 248); // Sky-400
-  doc.text(
-    toPdfSafeText(`${unit.subject.toUpperCase()}  |  UNIT ${unit.unitNumber} STUDY MATERIAL`),
-    marginX + 6,
-    cursorY + 8
-  );
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(16);
-  doc.setTextColor(255, 255, 255);
-  const titleLines = doc.splitTextToSize(
-    toPdfSafeText(`Unit ${unit.unitNumber}: ${unit.unitTitle}`),
-    contentWidth - 12
-  );
-  doc.text(titleLines, marginX + 6, cursorY + 16);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(203, 213, 225);
-  const totalConcepts = unit.sections.reduce((acc, s) => acc + s.items.length, 0);
-  const verifiedCount = unit.sections.reduce(
-    (acc, s) => acc + s.items.filter((i) => i.verificationStatus === 'VERIFIED').length,
-    0
-  );
-  doc.text(
-    `Source Pages: ${unit.sourcePages.length}  |  Verified Concepts: ${verifiedCount}/${totalConcepts}  |  Generated: ${new Date(
-      unit.updatedAt
-    ).toLocaleDateString()}`,
-    marginX + 6,
-    cursorY + 24
-  );
-
-  cursorY += 36;
-
-  // --- TABLE OF CONTENTS ---
-  doc.setFillColor(248, 250, 252);
-  doc.setDrawColor(226, 232, 240);
-  const tocHeight = 14 + unit.sections.length * 6.5 + (includeMcqs && unit.mcqs.length > 0 ? 6.5 : 0);
-  ensureSpace(tocHeight + 6);
-  doc.rect(marginX, cursorY, contentWidth, tocHeight, 'FD');
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10.5);
-  doc.setTextColor(15, 23, 42);
-  doc.text('TABLE OF CONTENTS', marginX + 5, cursorY + 7);
-
-  let tocY = cursorY + 13.5;
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9.5);
-  unit.sections.forEach((sec, idx) => {
-    doc.setTextColor(30, 41, 59);
-    const secLabel = toPdfSafeText(`${idx + 1}. ${sec.heading.replace(/^\d+\.\s*/, '')}`);
-    doc.text(secLabel.slice(0, 78), marginX + 5, tocY);
-    doc.setTextColor(100, 116, 139);
-    doc.text(`${sec.items.length} concept(s)`, pageWidth - marginX - 5, tocY, { align: 'right' });
-    tocY += 6.5;
-  });
-
-  if (includeMcqs && unit.mcqs.length > 0) {
-    doc.setTextColor(2, 132, 199);
-    doc.text(
-      `Practice Multiple-Choice Questions (${unit.mcqs.length} Source-Verified Items)`,
-      marginX + 5,
-      tocY
-    );
-  }
-
-  cursorY += tocHeight + 10;
-
-  // --- SECTIONS & CONCEPTS ---
-  for (let sIdx = 0; sIdx < unit.sections.length; sIdx++) {
-    const section = unit.sections[sIdx];
-    ensureSpace(22);
-
-    // Section Heading
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12.5);
-    doc.setTextColor(15, 23, 42);
-    const secHeadingLines = doc.splitTextToSize(toPdfSafeText(section.heading), contentWidth);
-    doc.text(secHeadingLines, marginX, cursorY);
-    cursorY += secHeadingLines.length * 5.5;
-
-    if (section.subheading) {
-      doc.setFont('helvetica', 'italic');
-      doc.setFontSize(9.5);
-      doc.setTextColor(71, 85, 105);
-      const subLines = doc.splitTextToSize(toPdfSafeText(section.subheading), contentWidth);
-      doc.text(subLines, marginX, cursorY);
-      cursorY += subLines.length * 4.5 + 2;
-    }
-
-    doc.setDrawColor(203, 213, 225);
-    doc.line(marginX, cursorY, pageWidth - marginX, cursorY);
-    cursorY += 6;
-
-    for (const item of section.items) {
-      ensureSpace(32);
-
-      // Original Keyword Highlight Bar
-      const isVerified = item.verificationStatus === 'VERIFIED';
-      if (isVerified) {
-        doc.setFillColor(224, 242, 254); // Sky-100 highlight for original keyword
-      } else {
-        doc.setFillColor(254, 243, 199); // Amber-100 for NEEDS_REVIEW
-      }
-      doc.rect(marginX, cursorY - 4, contentWidth, 8, 'F');
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10.5);
-      doc.setTextColor(isVerified ? 3 : 180, isVerified ? 105 : 83, isVerified ? 161 : 9);
-      const kwText = toPdfSafeText(`KEYWORD: ${item.originalKeyword}`).slice(0, 68);
-      doc.text(kwText, marginX + 3, cursorY + 1.2);
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(8);
-      const statusBadge = `${item.verificationStatus}  |  Source Page ${item.sourcePageReference}`;
-      doc.text(statusBadge, pageWidth - marginX - 3, cursorY + 1.2, { align: 'right' });
-
-      cursorY += 8.5;
-
-      // Supporting Source Passage
-      doc.setFont('helvetica', 'italic');
-      doc.setFontSize(8.8);
-      doc.setTextColor(71, 85, 105);
-      const sourceQuoteLines = doc.splitTextToSize(
-        toPdfSafeText(`Source Note (Page ${item.sourcePageReference}): "${item.supportingSourcePassage}"`),
-        contentWidth - 6
-      );
-      ensureSpace(sourceQuoteLines.length * 4.2 + 4);
-      doc.text(sourceQuoteLines, marginX + 3, cursorY);
-      cursorY += sourceQuoteLines.length * 4.2 + 2.5;
-
-      // Generated Explanation
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      doc.setTextColor(15, 23, 42);
-      const expLines = doc.splitTextToSize(toPdfSafeText(item.generatedExplanation), contentWidth - 4);
-      ensureSpace(expLines.length * 4.8 + 4);
-      doc.text(expLines, marginX + 2, cursorY);
-      cursorY += expLines.length * 4.8 + 3;
-
-      // Uncertainty Notice if NEEDS_REVIEW
-      if (item.verificationStatus === 'NEEDS_REVIEW' && item.uncertaintyReason) {
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(8.5);
-        doc.setTextColor(180, 83, 9);
-        const flagLines = doc.splitTextToSize(
-          toPdfSafeText(`Review Notice: ${item.uncertaintyReason}`),
-          contentWidth - 6
-        );
-        ensureSpace(flagLines.length * 4.2 + 4);
-        doc.text(flagLines, marginX + 3, cursorY);
-        cursorY += flagLines.length * 4.2 + 3;
-      }
-
-      // Formulas and Step-by-Step Derivations
-      if (item.formulasAndDerivations && item.formulasAndDerivations.length > 0) {
-        const boxLinesCount = item.formulasAndDerivations.length * 2 + 1;
-        const boxHeight = boxLinesCount * 4.6 + 6;
-        ensureSpace(boxHeight + 4);
-
-        doc.setFillColor(248, 250, 252);
-        doc.setDrawColor(203, 213, 225);
-        doc.rect(marginX + 2, cursorY - 2, contentWidth - 4, boxHeight, 'FD');
-
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(8.5);
-        doc.setTextColor(3, 105, 161);
-        doc.text('FORMULAS & STEP-BY-STEP DERIVATION:', marginX + 5, cursorY + 3);
-        cursorY += 7.5;
-
-        for (const step of item.formulasAndDerivations) {
-          doc.setFont('courier', 'bold');
-          doc.setFontSize(9.5);
-          doc.setTextColor(15, 23, 42);
-          const exprLine = toPdfSafeText(`Step ${step.stepNumber}: ${step.expression}`);
-          doc.text(exprLine.slice(0, 82), marginX + 6, cursorY);
-          cursorY += 4.3;
-
-          if (step.explanation) {
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(8.5);
-            doc.setTextColor(71, 85, 105);
-            doc.text(toPdfSafeText(`   ${step.explanation}`).slice(0, 92), marginX + 6, cursorY);
-            cursorY += 4.5;
-          }
-        }
-        cursorY += 4;
-      }
-
-      // Embedded Diagram Crop (if available)
-      if (item.diagramRegion) {
-        const diag = item.diagramRegion;
-        ensureSpace(54);
-        doc.setDrawColor(203, 213, 225);
-        doc.setFillColor(252, 252, 253);
-        doc.rect(marginX + 2, cursorY, contentWidth - 4, 48, 'FD');
-
-        if (diag.croppedDataUrl && diag.croppedDataUrl.startsWith('data:image/')) {
-          try {
-            doc.addImage(diag.croppedDataUrl, 'PNG', marginX + 6, cursorY + 3, 76, 34);
-          } catch {
-            // Ignore image embed failure and rely on schematic caption + labels
-          }
-        }
-
-        const textStartX = diag.croppedDataUrl ? marginX + 86 : marginX + 6;
-        const textMaxW = diag.croppedDataUrl ? contentWidth - 92 : contentWidth - 12;
-
-        doc.setFont('helvetica', 'bold');
-        doc.setFontSize(9);
-        doc.setTextColor(15, 23, 42);
-        const capLines = doc.splitTextToSize(
-          toPdfSafeText(`Diagram (Page ${diag.pageNumber}): ${diag.caption}`),
-          textMaxW
-        );
-        doc.text(capLines, textStartX, cursorY + 8);
-
-        if (diag.labels && diag.labels.length > 0) {
-          doc.setFont('courier', 'normal');
-          doc.setFontSize(8);
-          doc.setTextColor(51, 65, 85);
-          const lblLines = doc.splitTextToSize(
-            toPdfSafeText(`Labels: ${diag.labels.join(' | ')}`),
-            textMaxW
-          );
-          doc.text(lblLines, textStartX, cursorY + 8 + capLines.length * 4.5 + 2);
-        }
-
-        cursorY += 53;
-      }
-
-      cursorY += 4;
-    }
-
-    cursorY += 4;
-  }
-
-  // --- PRACTICE MCQs SECTION ---
-  if (includeMcqs && unit.mcqs.length > 0) {
-    ensureSpace(35);
-    doc.setFillColor(240, 249, 255);
-    doc.setDrawColor(186, 230, 253);
-    doc.rect(marginX, cursorY, contentWidth, 10, 'FD');
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(11);
-    doc.setTextColor(3, 105, 161);
-    doc.text(
-      `SOURCE-VERIFIED PRACTICE MCQS (${unit.mcqs.length} QUESTIONS)`,
-      marginX + 4,
-      cursorY + 6.5
-    );
-    cursorY += 15;
-
-    unit.mcqs.forEach((mcq, idx) => {
-      const qLines = doc.splitTextToSize(
-        toPdfSafeText(`Q${idx + 1}. ${mcq.question}`),
-        contentWidth - 4
-      );
-      ensureSpace(qLines.length * 4.8 + 32);
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(9.8);
-      doc.setTextColor(15, 23, 42);
-      doc.text(qLines, marginX, cursorY);
-      cursorY += qLines.length * 4.8 + 1.5;
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(9);
-      doc.setTextColor(51, 65, 85);
-      const optLetters = ['A', 'B', 'C', 'D'];
-      mcq.options.forEach((opt, oIdx) => {
-        const optLines = doc.splitTextToSize(
-          toPdfSafeText(`   (${optLetters[oIdx]}) ${opt}`),
-          contentWidth - 10
-        );
-        ensureSpace(optLines.length * 4.2 + 2);
-        doc.text(optLines, marginX + 2, cursorY);
-        cursorY += optLines.length * 4.2 + 1;
+  try {
+    for (let pIdx = 0; pIdx < totalPages; pIdx++) {
+      const pageNumber = pIdx + 1;
+      const isFirstPage = pIdx === 0;
+      const sheetHtml = buildA4SheetHtml({
+        unit,
+        isFirstPage,
+        pageNumber,
+        totalPages,
+        blocksHtml: pagesHtml[pIdx],
       });
 
-      const ansLines = doc.splitTextToSize(
-        toPdfSafeText(
-          `Answer: (${optLetters[mcq.correctIndex]}) — ${mcq.explanation} [Source Page ${mcq.sourcePageReference}: "${mcq.supportingSourcePassage}"]`
-        ),
-        contentWidth - 6
-      );
-      ensureSpace(ansLines.length * 4 + 4);
-      doc.setFont('helvetica', 'italic');
-      doc.setFontSize(8.5);
-      doc.setTextColor(5, 150, 105);
-      doc.text(ansLines, marginX + 3, cursorY + 1);
-      cursorY += ansLines.length * 4 + 6;
-    });
+      container.innerHTML = sheetHtml;
+
+      // Small delay for DOM layout and webfonts/KaTeX fonts to settle
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      const pageEl = container.firstElementChild as HTMLElement;
+      if (!pageEl) continue;
+
+      const canvas = await html2canvas(pageEl, {
+        scale: 2, // 2x for sharp print quality
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        backgroundColor: '#ffffff',
+        width: 794,
+        windowWidth: 794,
+      });
+
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+
+      if (pIdx > 0) {
+        doc.addPage();
+      }
+
+      doc.addImage(imgData, 'JPEG', 0, 0, a4WidthMm, a4HeightMm, undefined, 'FAST');
+    }
+
+    const safeFileName = `${unit.subject}_Unit_${unit.unitNumber}_${unit.unitTitle}`
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/_+/g, '_')
+      .slice(0, 60) + '.pdf';
+
+    const pdfBlob = doc.output('blob');
+    const blobUrl = URL.createObjectURL(pdfBlob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = safeFileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+
+    return safeFileName;
+  } finally {
+    document.body.removeChild(container);
   }
-
-  // --- ADD PAGE NUMBERS & FOOTERS TO ALL PAGES ---
-  const totalPages = doc.getNumberOfPages();
-  for (let p = 1; p <= totalPages; p++) {
-    doc.setPage(p);
-    doc.setDrawColor(226, 232, 240);
-    doc.line(marginX, pageHeight - 12, pageWidth - marginX, pageHeight - 12);
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.setTextColor(100, 116, 139);
-    doc.text(
-      toPdfSafeText(`${unit.subject} — Unit ${unit.unitNumber}: ${unit.unitTitle} (Source-Verified Study Material)`),
-      marginX,
-      pageHeight - 7.5
-    );
-    doc.text(`Page ${p} of ${totalPages}`, pageWidth - marginX, pageHeight - 7.5, {
-      align: 'right',
-    });
-  }
-
-  const safeFileName = `${unit.subject}_Unit_${unit.unitNumber}_${unit.unitTitle}`
-    .replace(/[^a-zA-Z0-9_-]+/g, '_')
-    .replace(/_+/g, '_')
-    .slice(0, 60) + '.pdf';
-
-  // Use explicit Blob + anchor download for maximum Android & desktop reliability
-  const pdfBlob = doc.output('blob');
-  const blobUrl = URL.createObjectURL(pdfBlob);
-  const link = document.createElement('a');
-  link.href = blobUrl;
-  link.download = safeFileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-
-  return safeFileName;
 }

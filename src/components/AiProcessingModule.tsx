@@ -16,7 +16,10 @@ interface AiProcessingModuleProps {
   processingStageIndex: number;
   processingError: string | null;
   activeUnit: StudyUnitDocument | undefined;
+  isSynthesizingMcqs?: boolean;
+  mcqJobStatus?: string;
   onRetryProcessing: () => void;
+  onTriggerMcqSynthesis?: () => void;
   onNavigateModule: (module: ModuleId) => void;
 }
 
@@ -42,9 +45,9 @@ const PIPELINE_STAGES = [
       'Verifying that every explanation is entailed by its source passage and flagging unclear handwriting or insufficient context as NEEDS_REVIEW.',
   },
   {
-    title: '05. Traceable Source-Only MCQ Synthesis',
+    title: '05. Traceable Source-Only MCQ Synthesis (Independent Job)',
     description:
-      'Generating practice multiple-choice questions strictly from sufficiently supported source material (or zero MCQs when source context is insufficient).',
+      'Generating practice multiple-choice questions strictly from sufficiently supported source material without holding up PDF availability.',
   },
 ];
 
@@ -53,7 +56,10 @@ export const AiProcessingModule: React.FC<AiProcessingModuleProps> = ({
   processingStageIndex,
   processingError,
   activeUnit,
+  isSynthesizingMcqs = false,
+  mcqJobStatus,
   onRetryProcessing,
+  onTriggerMcqSynthesis,
   onNavigateModule,
 }) => {
   const allItems = activeUnit ? activeUnit.sections.flatMap((s) => s.items) : [];
@@ -77,7 +83,7 @@ export const AiProcessingModule: React.FC<AiProcessingModuleProps> = ({
             </h1>
             <p className="text-xs sm:text-sm text-slate-600">
               Handwritten Notes → OCR → Keyword Extraction → Detailed Explanation → Source
-              Verification → Review → PDF Export.
+              Verification → Review → Immediate PDF Availability.
             </p>
           </div>
 
@@ -96,7 +102,7 @@ export const AiProcessingModule: React.FC<AiProcessingModuleProps> = ({
                 onClick={() => onNavigateModule('pdf_mcq')}
                 className="inline-flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors cursor-pointer"
               >
-                <span>PDF & MCQ Studio</span>
+                <span>Download PDF & Study</span>
                 <ArrowRight className="w-4 h-4 shrink-0" />
               </button>
             </div>
@@ -106,9 +112,24 @@ export const AiProcessingModule: React.FC<AiProcessingModuleProps> = ({
         {/* 5-Stage Pipeline Tracker */}
         <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
           {PIPELINE_STAGES.map((stage, idx) => {
-            const isDone = !isProcessing && !processingError && activeUnit !== undefined;
-            const isCurrent = isProcessing && processingStageIndex === idx;
-            const isCompletedStep = isDone || (isProcessing && idx < processingStageIndex);
+            const isStage5 = idx === 4;
+            const studyMaterialDone = !isProcessing && !processingError && activeUnit !== undefined;
+
+            let isCurrent = false;
+            let isCompletedStep = false;
+
+            if (isStage5) {
+              if (isSynthesizingMcqs) {
+                isCurrent = true;
+              } else if (activeUnit?.mcqs && activeUnit.mcqs.length > 0) {
+                isCompletedStep = true;
+              } else if (studyMaterialDone && activeUnit?.mcqStatus === 'COMPLETED') {
+                isCompletedStep = true;
+              }
+            } else {
+              isCurrent = isProcessing && processingStageIndex === idx;
+              isCompletedStep = studyMaterialDone || (isProcessing && idx < processingStageIndex);
+            }
 
             return (
               <div
@@ -126,9 +147,32 @@ export const AiProcessingModule: React.FC<AiProcessingModuleProps> = ({
                     <div className="w-5 h-5 rounded-full border-2 border-slate-300" />
                   )}
                 </div>
-                <div className="space-y-0.5 min-w-0">
-                  <h3 className="text-xs sm:text-sm font-bold text-slate-900">{stage.title}</h3>
+                <div className="space-y-0.5 min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-xs sm:text-sm font-bold text-slate-900">{stage.title}</h3>
+                    {isStage5 && (
+                      <span className="text-[11px] font-mono px-2 py-0.5 rounded font-semibold bg-slate-100 text-slate-700">
+                        {isSynthesizingMcqs
+                          ? 'PROCESSING'
+                          : activeUnit?.mcqs && activeUnit.mcqs.length > 0
+                          ? `${activeUnit.mcqs.length} MCQs READY`
+                          : activeUnit?.mcqStatus || 'PENDING'}
+                      </span>
+                    )}
+                  </div>
                   <p className="text-xs text-slate-600 leading-relaxed">{stage.description}</p>
+                  {isStage5 && !isSynthesizingMcqs && activeUnit && activeUnit.mcqs.length === 0 && (
+                    <div className="pt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={onTriggerMcqSynthesis}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-md cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        Generate Practice Questions Now
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             );

@@ -56,6 +56,7 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStageIndex, setProcessingStageIndex] = useState(0);
   const [processingError, setProcessingError] = useState<string | null>(null);
+  const [isSynthesizingMcqs, setIsSynthesizingMcqs] = useState(false);
 
   // Load user's saved study units and custom subjects from IndexedDB (starts completely empty)
   useEffect(() => {
@@ -267,6 +268,7 @@ export default function App() {
         sections: enrichedSections,
         mcqs: payloadData.mcqs || [],
         mcqGenerationNote: payloadData.mcqGenerationNote,
+        mcqStatus: 'PENDING',
       };
 
       const saved = await saveStudyUnit(newUnit);
@@ -276,6 +278,9 @@ export default function App() {
       setActiveUnitId(saved.id);
       setUploadedPages([]);
       setProcessingStageIndex(4);
+
+      // Start asynchronous Stage 05 MCQ synthesis independently in the background
+      handleSynthesizeMcqsForUnit(saved);
     } catch (err: any) {
       setProcessingError(
         err?.message || 'An unexpected error occurred during Gemini Vision processing.'
@@ -283,6 +288,92 @@ export default function App() {
     } finally {
       clearInterval(stageTimer);
       setIsProcessing(false);
+    }
+  };
+
+  const handleSynthesizeMcqsForUnit = async (targetUnit: StudyUnitDocument) => {
+    const allItems = targetUnit.sections.flatMap((s) => s.items);
+    if (allItems.length === 0) {
+      const updated: StudyUnitDocument = {
+        ...targetUnit,
+        mcqStatus: 'PARTIAL',
+        mcqGenerationNote: 'No concepts found to generate practice questions.',
+      };
+      await handleUpdateUnit(updated);
+      return;
+    }
+
+    setIsSynthesizingMcqs(true);
+    const inProgressUnit: StudyUnitDocument = {
+      ...targetUnit,
+      mcqStatus: 'PROCESSING',
+    };
+    await handleUpdateUnit(inProgressUnit);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 26000);
+
+    try {
+      const response = await fetch('/api/notes/regenerate-mcqs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          subject: targetUnit.subject,
+          unitNumber: targetUnit.unitNumber,
+          unitTitle: targetUnit.unitTitle,
+          sections: targetUnit.sections,
+        }),
+      });
+      clearTimeout(timeoutId);
+
+      const rawText = await response.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        throw new Error(
+          `MCQ synthesis returned non-JSON response (HTTP ${response.status}).`
+        );
+      }
+
+      if (!response.ok) {
+        const errorMsg =
+          typeof data.error === 'object' && data.error?.message
+            ? data.error.message
+            : data.error || data.message || `Synthesis failed (HTTP ${response.status})`;
+        throw new Error(errorMsg);
+      }
+
+      const payloadData = data.data || data;
+      const finalUnit: StudyUnitDocument = {
+        ...targetUnit,
+        mcqs: payloadData.mcqs || [],
+        mcqGenerationNote:
+          payloadData.mcqGenerationNote || 'Practice questions synthesized from verified passages.',
+        mcqStatus:
+          payloadData.status || (payloadData.mcqs?.length > 0 ? 'COMPLETED' : 'PARTIAL'),
+        updatedAt: new Date().toISOString(),
+      };
+      await handleUpdateUnit(finalUnit);
+    } catch (err: any) {
+      console.warn('MCQ Synthesis notice:', err?.message);
+      const isAbort = err?.name === 'AbortError' || err?.message?.includes('aborted');
+      const failReason = isAbort
+        ? 'MCQ generation timed out after 26 seconds. Your study notes and PDF are ready; you can retry MCQ synthesis at any time.'
+        : err?.message ||
+          'MCQ generation encountered an issue. You can retry generating questions without re-processing notes.';
+
+      const failedUnit: StudyUnitDocument = {
+        ...targetUnit,
+        mcqStatus: 'FAILED',
+        mcqGenerationNote: failReason,
+        updatedAt: new Date().toISOString(),
+      };
+      await handleUpdateUnit(failedUnit);
+    } finally {
+      clearTimeout(timeoutId);
+      setIsSynthesizingMcqs(false);
     }
   };
 
@@ -442,7 +533,14 @@ export default function App() {
                 processingStageIndex={processingStageIndex}
                 processingError={processingError}
                 activeUnit={activeUnit}
+                isSynthesizingMcqs={isSynthesizingMcqs}
+                mcqJobStatus={activeUnit?.mcqStatus}
                 onRetryProcessing={handleRunAiProcessing}
+                onTriggerMcqSynthesis={() => {
+                  if (activeUnit) {
+                    handleSynthesizeMcqsForUnit(activeUnit);
+                  }
+                }}
                 onNavigateModule={setActiveModule}
               />
             )}

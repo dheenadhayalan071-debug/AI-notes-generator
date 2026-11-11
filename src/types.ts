@@ -62,6 +62,8 @@ export interface PracticeMCQ {
   relatedKeyword: string;
 }
 
+export type McqJobStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'PARTIAL' | 'FAILED';
+
 export interface StudyUnitDocument {
   id: string;
   subject: string;
@@ -73,4 +75,5 @@ export interface StudyUnitDocument {
   sections: StudySection[];
   mcqs: PracticeMCQ[];
   mcqGenerationNote?: string;
+  mcqStatus?: McqJobStatus;
 }

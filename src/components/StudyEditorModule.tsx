@@ -21,6 +21,7 @@ import {
   DerivationStep,
   ModuleId,
 } from '../types';
+import { MathEquation } from './MathEquation';
 
 interface StudyEditorModuleProps {
   units: StudyUnitDocument[];
@@ -709,22 +710,29 @@ export const StudyEditorModule: React.FC<StudyEditorModuleProps> = ({
                                     <span className="sm:col-span-2 text-xs font-mono font-bold text-sky-800">
                                       Step {step.stepNumber}
                                     </span>
-                                    <input
-                                      type="text"
-                                      value={step.expression}
-                                      onChange={(e) =>
-                                        updateConceptItem(section.id, item.id, (prev) => {
-                                          const next = [...prev.formulasAndDerivations];
-                                          next[sIdx] = {
-                                            ...next[sIdx],
-                                            expression: e.target.value,
-                                          };
-                                          return { ...prev, formulasAndDerivations: next };
-                                        })
-                                      }
-                                      placeholder="Formula expression..."
-                                      className="sm:col-span-5 px-2.5 py-1.5 text-xs font-mono font-semibold bg-white border border-slate-200 rounded-md text-slate-900 min-w-0"
-                                    />
+                                    <div className="sm:col-span-5 flex flex-col gap-1 min-w-0">
+                                      <input
+                                        type="text"
+                                        value={step.expression}
+                                        onChange={(e) =>
+                                          updateConceptItem(section.id, item.id, (prev) => {
+                                            const next = [...prev.formulasAndDerivations];
+                                            next[sIdx] = {
+                                              ...next[sIdx],
+                                              expression: e.target.value,
+                                            };
+                                            return { ...prev, formulasAndDerivations: next };
+                                          })
+                                        }
+                                        placeholder="Formula / LaTeX (e.g. \vec{E} = \frac{F}{q})..."
+                                        className="px-2.5 py-1.5 text-xs font-mono font-semibold bg-white border border-slate-200 rounded-md text-slate-900 min-w-0"
+                                      />
+                                      {step.expression && (
+                                        <div className="px-2 py-1 bg-white rounded border border-slate-200/80 text-xs overflow-x-auto text-slate-900">
+                                          <MathEquation expression={step.expression} displayMode={false} />
+                                        </div>
+                                      )}
+                                    </div>
                                     <input
                                       type="text"
                                       value={step.explanation}

@@ -18,7 +18,9 @@ app.use(express.json({ limit: '50mb' }));
  */
 app.get('/api/health', (_req, res) => {
   res.json({
-    status: 'ok',
+    success: true,
+    service: 'AI Notes Backend',
+    status: 'healthy',
     timestamp: new Date().toISOString(),
     geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
   });
@@ -66,7 +68,6 @@ app.post('/api/notes/regenerate-mcqs', async (req, res) => {
     const result = await regenerateMcqsCore(req.body);
     return res.status(200).json({
       success: true,
-      status: 'completed',
       data: result,
       ...result,
     });
