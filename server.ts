@@ -22,7 +22,9 @@ app.get('/api/health', (_req, res) => {
     service: 'AI Notes Backend',
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+    geminiKeyConfigured: Boolean(
+      (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim()
+    ),
   });
 });
 

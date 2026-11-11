@@ -5,6 +5,8 @@ export default function handler(_req: any, res: any) {
     service: 'AI Notes Backend',
     status: 'healthy',
     timestamp: new Date().toISOString(),
-    geminiKeyConfigured: Boolean(process.env.GEMINI_API_KEY),
+    geminiKeyConfigured: Boolean(
+      (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim()
+    ),
   });
 }

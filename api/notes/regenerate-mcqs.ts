@@ -4,10 +4,10 @@ export const PRIMARY_GEMINI_MODEL_ID = 'gemini-3.8-flash';
 export const FALLBACK_GEMINI_MODEL_ID = 'gemini-2.5-flash';
 
 export function getGenAIClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim();
   if (!apiKey) {
     throw new Error(
-      'GEMINI_API_KEY is not configured on the server. Please configure it in your Vercel Environment Variables.'
+      'GEMINI_API_KEY is not configured on the server. Please configure GEMINI_API_KEY in your Vercel Environment Variables or Project Settings.'
     );
   }
   return new GoogleGenAI({
