@@ -159,6 +159,9 @@ export default function App() {
     setProcessingError(null);
     setProcessingStageIndex(0);
 
+    const controller = new AbortController();
+    const abortTimeout = setTimeout(() => controller.abort(), 290000);
+
     const stageTimer = setInterval(() => {
       setProcessingStageIndex((prev) => (prev < 4 ? prev + 1 : prev));
     }, 1400);
@@ -167,6 +170,7 @@ export default function App() {
       const response = await fetch('/api/notes/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           subject: cleanSubject,
           unitNumber: uploadUnitNumber,
@@ -188,6 +192,11 @@ export default function App() {
       } catch {
         // Response was not valid JSON (e.g. 404 HTML, 502/504 Bad Gateway, or plain text)
         if (!response.ok) {
+          if (response.status === 504) {
+            throw new Error(
+              'Server execution reached duration threshold (HTTP 504 Gateway Timeout). Your notes may be large—please retry, or verify Vercel Fluid Compute 300s limit is applied.'
+            );
+          }
           throw new Error(
             `Backend server error (HTTP ${response.status} ${response.statusText}): ${
               responseText.slice(0, 200).trim() || 'API route not reachable'
@@ -286,6 +295,7 @@ export default function App() {
         err?.message || 'An unexpected error occurred during Gemini Vision processing.'
       );
     } finally {
+      clearTimeout(abortTimeout);
       clearInterval(stageTimer);
       setIsProcessing(false);
     }

@@ -3,8 +3,14 @@
   "outputDirectory": "dist",
   "cleanUrls": true,
   "functions": {
-    "api/**/*.ts": {
-      "maxDuration": 60
+    "api/notes/process.ts": {
+      "maxDuration": 300
+    },
+    "api/notes/regenerate-mcqs.ts": {
+      "maxDuration": 120
+    },
+    "api/health.ts": {
+      "maxDuration": 10
     }
   },
   "rewrites": [

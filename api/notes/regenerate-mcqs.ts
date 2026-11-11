@@ -1,5 +1,15 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
 
+export const maxDuration = 120;
+export const config = {
+  maxDuration: 120,
+  api: {
+    bodyParser: {
+      sizeLimit: '10mb',
+    },
+  },
+};
+
 export const PRIMARY_GEMINI_MODEL_ID = 'gemini-3.8-flash';
 export const FALLBACK_GEMINI_MODEL_ID = 'gemini-2.5-flash';
 

@@ -1,5 +1,15 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
 
+export const maxDuration = 300;
+export const config = {
+  maxDuration: 300,
+  api: {
+    bodyParser: {
+      sizeLimit: '25mb',
+    },
+  },
+};
+
 export const PRIMARY_GEMINI_MODEL_ID = 'gemini-3.8-flash';
 export const FALLBACK_GEMINI_MODEL_ID = 'gemini-2.5-flash';
 
@@ -22,35 +32,61 @@ export function getGenAIClient(): GoogleGenAI {
 }
 
 /**
- * Execute generateContent with automatic model fallback if primary model experiences demand spikes
+ * Execute generateContent with explicit timeout and automatic model fallback
  */
 export async function generateContentWithFallback(
   ai: GoogleGenAI,
-  requestParams: any
+  requestParams: any,
+  timeoutMs: number = 75000
 ): Promise<{ response: GenerateContentResponse; modelUsed: string }> {
-  try {
-    const response = await ai.models.generateContent({
-      ...requestParams,
-      model: PRIMARY_GEMINI_MODEL_ID,
+  const callModel = async (model: string) => {
+    let timer: NodeJS.Timeout | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const err = new Error(`Gemini vision request timed out after ${timeoutMs}ms for model ${model}`);
+        (err as any).code = 'TIMEOUT';
+        reject(err);
+      }, timeoutMs);
     });
+
+    try {
+      const response = await Promise.race([
+        ai.models.generateContent({
+          ...requestParams,
+          model,
+        }),
+        timeoutPromise,
+      ]);
+      return response;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  try {
+    const response = await callModel(PRIMARY_GEMINI_MODEL_ID);
     return { response, modelUsed: PRIMARY_GEMINI_MODEL_ID };
   } catch (error: any) {
     const status = error?.status || error?.statusCode;
     const msg = error?.message || '';
+    const isTimeout = error?.code === 'TIMEOUT' || /timeout/i.test(msg);
     const isOverloadedOrUnavailable =
       status === 503 ||
       status === 429 ||
+      isTimeout ||
       /unavailable|high demand|overloaded|resource_exhausted/i.test(msg);
 
     if (isOverloadedOrUnavailable) {
       console.warn(
-        `Primary model ${PRIMARY_GEMINI_MODEL_ID} unavailable (${msg}). Falling back to ${FALLBACK_GEMINI_MODEL_ID}...`
+        `Primary model ${PRIMARY_GEMINI_MODEL_ID} encounter (${msg}). Retrying once with ${FALLBACK_GEMINI_MODEL_ID}...`
       );
-      const response = await ai.models.generateContent({
-        ...requestParams,
-        model: FALLBACK_GEMINI_MODEL_ID,
-      });
-      return { response, modelUsed: FALLBACK_GEMINI_MODEL_ID };
+      try {
+        const fallbackResponse = await callModel(FALLBACK_GEMINI_MODEL_ID);
+        return { response: fallbackResponse, modelUsed: FALLBACK_GEMINI_MODEL_ID };
+      } catch (fallbackError: any) {
+        console.error(`Fallback model ${FALLBACK_GEMINI_MODEL_ID} also failed:`, fallbackError.message);
+        throw fallbackError;
+      }
     }
     throw error;
   }
@@ -182,32 +218,37 @@ export interface ProcessNotesPayload {
 }
 
 export async function processNotesCore(payload: ProcessNotesPayload) {
+  const t0 = Date.now();
   const { subject, unitNumber, unitTitle, pages } = payload;
 
   if (!pages || !Array.isArray(pages) || pages.length === 0) {
     throw new Error('At least one page image or PDF page is required.');
   }
 
+  console.log(
+    `[Pipeline Start Stages 01-04] Processing ${pages.length} page(s) for "${subject}" Unit ${unitNumber}: ${unitTitle}`
+  );
+
   const ai = getGenAIClient();
-    const parts: Array<{ inlineData?: { mimeType: string; data: string }; text?: string }> = [];
+  const parts: Array<{ inlineData?: { mimeType: string; data: string }; text?: string }> = [];
 
-    for (const page of pages) {
-      const base64Match = page.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
-      const mimeType = base64Match ? base64Match[1] : page.mimeType || 'image/png';
-      const base64Data = base64Match ? base64Match[2] : page.dataUrl;
+  for (const page of pages) {
+    const base64Match = page.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    const mimeType = base64Match ? base64Match[1] : page.mimeType || 'image/png';
+    const base64Data = base64Match ? base64Match[2] : page.dataUrl;
 
-      parts.push({
-        text: `=== UPLOADED SOURCE PAGE ${page.pageNumber} (${page.fileName}) ===`,
-      });
-      parts.push({
-        inlineData: {
-          mimeType,
-          data: base64Data,
-        },
-      });
-    }
+    parts.push({
+      text: `=== UPLOADED SOURCE PAGE ${page.pageNumber} (${page.fileName}) ===`,
+    });
+    parts.push({
+      inlineData: {
+        mimeType,
+        data: base64Data,
+      },
+    });
+  }
 
-    const promptText = `You are a strict, source-bound academic OCR and study material structuring engine for ${subject} (Unit ${unitNumber}: ${unitTitle}).
+  const promptText = `You are a strict, source-bound academic OCR and study material structuring engine for ${subject} (Unit ${unitNumber}: ${unitTitle}).
 
 CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
 1. OUTPUT LANGUAGE: All generated headings, explanations, derivation step descriptions MUST be in clear English. (If the subject is another language, preserve original script keywords/quotes in originalKeyword and supportingSourcePassage, and provide the explanation in English).
@@ -227,9 +268,10 @@ CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
 5. DIAGRAMS:
    - If a page contains a drawn diagram, circuit, graph, or flowchart, include "diagramRegion" with its "pageNumber", normalized bounding box "box2d" as [ymin, xmin, ymax, xmax] (each 0 to 1000), a factual "caption" in English, and the exact "labels" visible in the drawing.`;
 
-    parts.push({ text: promptText });
+  parts.push({ text: promptText });
 
-    const { response, modelUsed } = await generateContentWithFallback(ai, {
+  const tVisionStart = Date.now();
+  const { response, modelUsed } = await generateContentWithFallback(ai, {
       contents: { parts },
       config: {
         systemInstruction:
@@ -346,36 +388,18 @@ CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
                 required: ['heading', 'subheading', 'items'],
               },
             },
-            mcqs: {
-              type: Type.ARRAY,
-              description: 'Optional practice MCQs',
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  question: { type: Type.STRING },
-                  options: {
-                    type: Type.ARRAY,
-                    items: { type: Type.STRING },
-                  },
-                  correctIndex: { type: Type.INTEGER },
-                  explanation: { type: Type.STRING },
-                  supportingSourcePassage: {
-                    type: Type.STRING,
-                  },
-                  sourcePageReference: { type: Type.INTEGER },
-                  relatedKeyword: { type: Type.STRING },
-                },
-              },
-            },
-            mcqGenerationNote: {
-              type: Type.STRING,
-            },
           },
           required: ['rawPageTranscripts', 'sections'],
         },
       },
     });
 
+    const visionDurationMs = Date.now() - tVisionStart;
+    console.log(
+      `[Stage 01-03 Gemini Vision Completed] Verbatim OCR, Keyword Extraction & Grounded Explanation took ${visionDurationMs}ms (model: ${modelUsed})`
+    );
+
+    const tAuditStart = Date.now();
     const rawJson = (response.text ?? '{}').trim();
     const parsed = JSON.parse(rawJson);
 
@@ -448,8 +472,22 @@ CRITICAL ENGINEERING RULES (MUST OBEY WITHOUT EXCEPTION):
       }),
     }));
 
+    const auditDurationMs = Date.now() - tAuditStart;
+    const totalItemCount = auditedSections.reduce((sum: number, s: any) => sum + (s.items?.length || 0), 0);
+    console.log(
+      `[Stage 04 Verification Completed] Source entailment & sufficiency audit took ${auditDurationMs}ms across ${totalItemCount} concept(s)`
+    );
+
+    const totalDurationMs = Date.now() - t0;
+    console.log(`[Pipeline Summary Stages 01-04] Total duration: ${totalDurationMs}ms`);
+
     const result = {
       modelUsed,
+      timings: {
+        totalMs: totalDurationMs,
+        visionMs: visionDurationMs,
+        auditMs: auditDurationMs,
+      },
       rawPageTranscripts: Array.from(transcriptMap.entries()).map(([pageNumber, rawTranscript]) => ({
         pageNumber,
         rawTranscript,
