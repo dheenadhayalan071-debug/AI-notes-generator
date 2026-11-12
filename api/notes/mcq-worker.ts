@@ -1,6 +1,6 @@
 import { Receiver } from '@upstash/qstash';
 import { createClient } from '@supabase/supabase-js';
-import { regenerateMcqsCore } from './regenerate-mcqs';
+import { regenerateMcqsCore } from '../../lib/regenerate-mcqs-core';
 
 export const maxDuration = 300;
 export const config = {
@@ -25,11 +25,9 @@ function getSupabase() {
 
 async function readRawBody(req: any): Promise<string> {
   const chunks: Buffer[] = [];
-
   for await (const chunk of req) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
-
   return Buffer.concat(chunks).toString('utf8');
 }
 
@@ -121,8 +119,6 @@ export default async function handler(req: any, res: any) {
 
     if (!existing) return send(res, 404, { success: false, error: 'Job not found.' });
 
-    // Already completed or being worked on. A duplicate delivery should not
-    // generate again. Leave PENDING jobs for QStash retry when concurrency is full.
     if (existing.status === 'PENDING') {
       return send(res, 429, { success: false, retry: true, error: 'Worker concurrency is full.' });
     }
@@ -157,6 +153,9 @@ export default async function handler(req: any, res: any) {
       .update({
         status: result.status,
         mcqs: result.mcqs,
+        progress: 100,
+        progress_message:
+          result.status === 'PARTIAL' ? result.mcqGenerationNote : 'Completed',
         error_message:
           result.status === 'PARTIAL' ? result.mcqGenerationNote : null,
         updated_at: new Date().toISOString(),
@@ -186,6 +185,10 @@ export default async function handler(req: any, res: any) {
       .from('mcq_generation_jobs')
       .update({
         status: terminal ? 'FAILED' : 'PENDING',
+        progress: terminal ? 100 : 0,
+        progress_message: terminal
+          ? 'Failed after maximum retries.'
+          : `Attempt ${attempts} failed; QStash may retry. ${message}`,
         error_message: terminal
           ? message
           : `Attempt ${attempts} failed; QStash may retry. ${message}`,
@@ -193,7 +196,6 @@ export default async function handler(req: any, res: any) {
       })
       .eq('id', job.id);
 
-    // Non-2xx causes QStash's bounded retry policy to deliver the job again.
     if (!terminal) {
       return send(res, 503, {
         success: false,
@@ -202,8 +204,6 @@ export default async function handler(req: any, res: any) {
       });
     }
 
-    // Terminal failures are persisted and acknowledged; QStash must not retry
-    // indefinitely. The frontend can offer an explicit new job.
     return send(res, 200, {
       success: false,
       status: 'FAILED',
