@@ -9,6 +9,12 @@
     "api/notes/regenerate-mcqs.ts": {
       "maxDuration": 120
     },
+    "api/notes/mcq-jobs.ts": {
+      "maxDuration": 30
+    },
+    "api/notes/mcq-worker.ts": {
+      "maxDuration": 300
+    },
     "api/health.ts": {
       "maxDuration": 10
     }
