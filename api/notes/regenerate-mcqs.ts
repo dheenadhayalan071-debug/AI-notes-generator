@@ -1,165 +1,198 @@
 import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
 
-export const maxDuration = 120;
-export const config = {
-  maxDuration: 120,
-  api: {
-    bodyParser: {
-      sizeLimit: '10mb',
-    },
-  },
-};
-
 export const PRIMARY_GEMINI_MODEL_ID = 'gemini-3.8-flash';
 export const FALLBACK_GEMINI_MODEL_ID = 'gemini-2.5-flash';
 
 export function getGenAIClient(): GoogleGenAI {
   const apiKey = (process.env.GEMINI_API_KEY || process.env.API_KEY || '').trim();
+
   if (!apiKey) {
     throw new Error(
-      'GEMINI_API_KEY is not configured on the server. Please configure GEMINI_API_KEY in your Vercel Environment Variables or Project Settings.'
+      'GEMINI_API_KEY is not configured on the server. Configure it in Vercel Environment Variables.'
     );
   }
+
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
       apiVersion: 'v1beta',
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
+      headers: { 'User-Agent': 'ai-notes-studio' },
     },
   });
 }
 
-/**
- * Execute generateContent with explicit timeout and automatic model fallback
- */
 export async function generateContentWithTimeoutAndFallback(
   ai: GoogleGenAI,
   requestParams: any,
-  timeoutMs: number = 22000
+  timeoutMs = 70000
 ): Promise<{ response: GenerateContentResponse; modelUsed: string }> {
-  const callModel = async (model: string) => {
-    let timer: NodeJS.Timeout | undefined;
-    const timeoutPromise = new Promise<never>((_, reject) => {
+  const callModel = async (model: string): Promise<GenerateContentResponse> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
-        const err = new Error(`Gemini request timed out after ${timeoutMs}ms for model ${model}`);
-        (err as any).code = 'TIMEOUT';
-        reject(err);
+        const error: any = new Error(
+          `Gemini request timed out after ${timeoutMs}ms for model ${model}.`
+        );
+        error.code = 'GEMINI_TIMEOUT';
+        reject(error);
       }, timeoutMs);
     });
 
     try {
-      const response = await Promise.race([
-        ai.models.generateContent({
-          ...requestParams,
-          model,
-        }),
-        timeoutPromise,
+      return await Promise.race([
+        ai.models.generateContent({ ...requestParams, model }),
+        timeout,
       ]);
-      return response;
     } finally {
       if (timer) clearTimeout(timer);
     }
   };
 
   try {
-    const response = await callModel(PRIMARY_GEMINI_MODEL_ID);
-    return { response, modelUsed: PRIMARY_GEMINI_MODEL_ID };
+    return {
+      response: await callModel(PRIMARY_GEMINI_MODEL_ID),
+      modelUsed: PRIMARY_GEMINI_MODEL_ID,
+    };
   } catch (error: any) {
     const status = error?.status || error?.statusCode;
-    const msg = error?.message || '';
-    const isTimeout = error?.code === 'TIMEOUT' || /timeout/i.test(msg);
-    const isOverloadedOrUnavailable =
-      status === 503 ||
+    const message = String(error?.message || '');
+    const retryable =
+      error?.code === 'GEMINI_TIMEOUT' ||
       status === 429 ||
-      isTimeout ||
-      /unavailable|high demand|overloaded|resource_exhausted/i.test(msg);
+      status === 503 ||
+      /timeout|unavailable|overloaded|resource_exhausted/i.test(message);
 
-    if (isOverloadedOrUnavailable) {
-      console.warn(
-        `Primary model ${PRIMARY_GEMINI_MODEL_ID} failed (${msg}). Retrying once with ${FALLBACK_GEMINI_MODEL_ID}...`
-      );
-      try {
-        const fallbackResponse = await callModel(FALLBACK_GEMINI_MODEL_ID);
-        return { response: fallbackResponse, modelUsed: FALLBACK_GEMINI_MODEL_ID };
-      } catch (fallbackError: any) {
-        console.error(`Fallback model ${FALLBACK_GEMINI_MODEL_ID} also failed:`, fallbackError.message);
-        throw fallbackError;
-      }
-    }
-    throw error;
+    if (!retryable) throw error;
+
+    return {
+      response: await callModel(FALLBACK_GEMINI_MODEL_ID),
+      modelUsed: FALLBACK_GEMINI_MODEL_ID,
+    };
   }
 }
 
 export interface RegenerateMcqsPayload {
-  jobId?: string;
   subject: string;
   unitNumber: number;
   unitTitle: string;
   sections: any[];
+  existingMcqs?: any[];
   maxQuestions?: number;
 }
 
+function normalize(text: unknown): string {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+function sourceContains(source: string, value: string): boolean {
+  const normalizedSource = normalize(source);
+  const normalizedValue = normalize(value);
+  return Boolean(normalizedValue) && normalizedSource.includes(normalizedValue);
+}
+
+function collectCandidates(sections: any[]): any[] {
+  const allItems = sections.flatMap((section) =>
+    Array.isArray(section?.items) ? section.items : []
+  );
+
+  const eligible = allItems.filter((item) => {
+    const passage = String(item?.supportingSourcePassage || '').trim();
+    const page = Number(item?.sourcePageReference);
+    const status = item?.verificationStatus;
+    const sufficiency = item?.sourceSufficiency;
+
+    if (!Number.isInteger(page) || page < 1) return false;
+    if (passage.length < 8) return false;
+    if (/\[(?:unclear|illegible)\]/i.test(passage)) return false;
+    if (status !== 'VERIFIED' && status !== 'PARTIALLY_SUPPORTED') return false;
+    if (sufficiency === 'INSUFFICIENT') return false;
+
+    return true;
+  });
+
+  // Prefer VERIFIED material while retaining eligible partial evidence.
+  return eligible.sort((a, b) => {
+    const aVerified = a.verificationStatus === 'VERIFIED' ? 1 : 0;
+    const bVerified = b.verificationStatus === 'VERIFIED' ? 1 : 0;
+    return bVerified - aVerified;
+  });
+}
+
 export async function regenerateMcqsCore(payload: RegenerateMcqsPayload) {
-  const { subject, unitNumber, unitTitle, sections, maxQuestions = 6 } = payload;
-  if (!sections || !Array.isArray(sections)) {
+  const {
+    subject,
+    unitNumber,
+    unitTitle,
+    sections,
+    existingMcqs = [],
+    maxQuestions = 6,
+  } = payload;
+
+  if (!Array.isArray(sections)) {
     throw new Error('Study sections are required to generate MCQs.');
   }
 
-  // 1. Gather all verified & partially supported concepts with legible handwritten source text
-  const verifiedItems = sections.flatMap((sec: any) =>
-    (sec.items || []).filter(
-      (item: any) =>
-        (item.verificationStatus === 'VERIFIED' ||
-          item.verificationStatus === 'PARTIALLY_SUPPORTED') &&
-        item.sourceSufficiency !== 'INSUFFICIENT' &&
-        String(item.supportingSourcePassage || '').trim().length >= 8 &&
-        !/\[unclear\]|\[illegible\]/i.test(item.supportingSourcePassage || '')
-    )
-  );
-
-  console.log(
-    `[MCQ Engine] Found ${verifiedItems.length} eligible concept(s) (VERIFIED or PARTIALLY_SUPPORTED) for ${subject} Unit ${unitNumber}`
-  );
-
-  if (verifiedItems.length === 0) {
+  const candidates = collectCandidates(sections).slice(0, 8);
+  if (candidates.length === 0) {
     return {
-      status: 'PARTIAL',
+      status: 'PARTIAL' as const,
+      modelUsed: undefined,
       mcqs: [],
       mcqGenerationNote:
-        'No concepts with sufficient handwritten context are verified yet. Please review and verify items in the Study Material Editor first.',
+        'No legible VERIFIED or PARTIALLY_SUPPORTED source passages with page references were eligible for questions.',
     };
   }
 
-  // 2. Select a focused batch of concepts (limit to top 8 concepts max to avoid massive prompt size and slow latency)
-  const candidateItems = verifiedItems.slice(0, 8);
-  const targetCount = Math.max(1, Math.min(maxQuestions, candidateItems.length * 2, 8));
+  const targetCount = Math.max(
+    1,
+    Math.min(Number(maxQuestions) || 6, candidates.length * 2, 8)
+  );
 
-  const sourceContextPayload = candidateItems.map((item: any) => ({
-    keyword: item.originalKeyword,
-    pageNumber: item.sourcePageReference,
-    supportingSourcePassage: item.supportingSourcePassage,
-    verifiedExplanation: item.generatedExplanation,
-    formulas: (item.formulasAndDerivations || []).map((f: any) => f.expression),
+  const contexts = candidates.map((item, index) => ({
+    candidateId: `C${index + 1}`,
+    keyword: String(item.originalKeyword || ''),
+    verificationStatus: item.verificationStatus,
+    pageNumber: Number(item.sourcePageReference),
+    sourcePassage: String(item.supportingSourcePassage || ''),
+    explanation: String(item.generatedExplanation || ''),
+    formulas: (Array.isArray(item.formulasAndDerivations)
+      ? item.formulasAndDerivations
+      : []
+    ).map((step: any) => String(step?.expression || '')).filter(Boolean),
   }));
 
+  const prompt = `
+Create at most ${targetCount} source-grounded multiple-choice questions for
+${subject}, Unit ${unitNumber}: ${unitTitle}.
+
+Use only facts explicitly contained in the supplied source passages. A
+PARTIALLY_SUPPORTED concept may only produce a question whose answer is
+explicitly stated in that concept's source passage. Do not use outside
+knowledge, assumptions, or missing textbook facts. Do not create questions
+just to reach the requested count. Return fewer or zero questions if needed.
+
+Each question must:
+- Have exactly four distinct, non-empty options.
+- Have exactly one correct answer.
+- Use the exact candidateId, page number, and source passage from the input.
+- Have a correct option supported directly by that source passage.
+- Have an explanation that does not add unsupported facts.
+- Avoid ambiguous distractors.
+
+Input:
+${JSON.stringify(contexts)}
+
+Return JSON only, conforming to the response schema.
+`;
+
   const ai = getGenAIClient();
-
-  const promptText = `Generate ${targetCount} multiple-choice practice questions for ${subject} (Unit ${unitNumber}: ${unitTitle}) strictly using ONLY the verified source passages and explanations below:
-
-${JSON.stringify(sourceContextPayload, null, 2)}
-
-STRICT ENGINEERING RULES:
-1. Every question, correct option, and explanation MUST be 100% traceable to the provided "supportingSourcePassage" and "verifiedExplanation".
-2. Do NOT invent outside textbook facts.
-3. Every question must have exactly 4 options.
-4. Output strictly in English.`;
-
   const { response, modelUsed } = await generateContentWithTimeoutAndFallback(
     ai,
     {
-      contents: promptText,
+      contents: prompt,
       config: {
         responseMimeType: 'application/json',
         responseSchema: {
@@ -170,6 +203,7 @@ STRICT ENGINEERING RULES:
               items: {
                 type: Type.OBJECT,
                 properties: {
+                  candidateId: { type: Type.STRING },
                   question: { type: Type.STRING },
                   options: {
                     type: Type.ARRAY,
@@ -182,6 +216,7 @@ STRICT ENGINEERING RULES:
                   relatedKeyword: { type: Type.STRING },
                 },
                 required: [
+                  'candidateId',
                   'question',
                   'options',
                   'correctIndex',
@@ -198,105 +233,121 @@ STRICT ENGINEERING RULES:
         },
       },
     },
-    22000 // 22s finite timeout ensures function completes well within Vercel's limit
+    70000
   );
 
-  let parsed: any = {};
+  let parsed: any;
   try {
-    const rawText = (response.text ?? '{}').trim();
-    parsed = JSON.parse(rawText);
-  } catch (parseErr) {
-    console.warn('[MCQ Engine] Failed to parse Gemini JSON output:', parseErr);
-    parsed = { mcqs: [] };
+    parsed = JSON.parse(String(response.text || '{}'));
+  } catch {
+    const error: any = new Error('Gemini returned an invalid JSON response.');
+    error.code = 'INVALID_MODEL_RESPONSE';
+    error.retryable = false;
+    throw error;
   }
 
-  // 3. Strict Source-Grounding Validation
-  const rawMcqs = Array.isArray(parsed.mcqs) ? parsed.mcqs : [];
-  const validMcqs = rawMcqs
-    .filter((m: any) => {
-      const q = String(m.question || '').trim();
-      const quote = String(m.supportingSourcePassage || '').trim();
-      const opts = Array.isArray(m.options) ? m.options : [];
-      if (q.length < 5 || quote.length < 8 || opts.length < 2) return false;
-      if (/\[unclear\]|\[illegible\]/i.test(quote)) return false;
-      return true;
-    })
-    .map((m: any, idx: number) => {
-      const opts = (m.options || []).slice(0, 4).map((o: any) => String(o));
-      while (opts.length < 4) opts.push('Not stated in the uploaded notes');
-      return {
-        id: `mcq-gen-${Date.now()}-${idx}`,
-        question: String(m.question || ''),
-        options: opts as [string, string, string, string],
-        correctIndex: Math.max(0, Math.min(3, Number(m.correctIndex) || 0)),
-        explanation: String(m.explanation || ''),
-        supportingSourcePassage: String(m.supportingSourcePassage || ''),
-        sourcePageReference: Number(m.sourcePageReference) || 1,
-        relatedKeyword: String(m.relatedKeyword || 'Unit Concept'),
-      };
-    });
+  if (!Array.isArray(parsed.mcqs)) {
+    const error: any = new Error('Gemini response did not contain an MCQ array.');
+    error.code = 'INVALID_MODEL_RESPONSE';
+    error.retryable = false;
+    throw error;
+  }
 
-  const jobStatus = validMcqs.length > 0 ? (validMcqs.length < rawMcqs.length ? 'PARTIAL' : 'COMPLETED') : 'PARTIAL';
+  const contextById = new Map(
+    contexts.map((context) => [context.candidateId, context])
+  );
+  const seenQuestions = new Set(
+    existingMcqs.map((mcq) => normalize(mcq?.question)).filter(Boolean)
+  );
+  const validMcqs: any[] = [];
+  let rejectedCount = 0;
+
+  for (const raw of parsed.mcqs) {
+    const context = contextById.get(String(raw?.candidateId || ''));
+    const question = String(raw?.question || '').trim();
+    const explanation = String(raw?.explanation || '').trim();
+    const quote = String(raw?.supportingSourcePassage || '').trim();
+    const options = Array.isArray(raw?.options)
+      ? raw.options.map((option: any) => String(option).trim())
+      : [];
+    const correctIndex = Number(raw?.correctIndex);
+    const normalizedQuestion = normalize(question);
+
+    if (!context || question.length < 8 || explanation.length < 3) {
+      rejectedCount += 1;
+      continue;
+    }
+    if (options.length !== 4 || options.some((option: string) => !option)) {
+      rejectedCount += 1;
+      continue;
+    }
+    if (new Set(options.map(normalize)).size !== 4) {
+      rejectedCount += 1;
+      continue;
+    }
+    if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex > 3) {
+      rejectedCount += 1;
+      continue;
+    }
+    if (seenQuestions.has(normalizedQuestion)) {
+      rejectedCount += 1;
+      continue;
+    }
+
+    // The returned citation must be a verbatim substring of the eligible source.
+    if (!sourceContains(context.sourcePassage, quote)) {
+      rejectedCount += 1;
+      continue;
+    }
+
+    // Do not accept a wrong page, candidate keyword, or unsupported answer.
+    if (Number(raw.sourcePageReference) !== context.pageNumber) {
+      rejectedCount += 1;
+      continue;
+    }
+    if (normalize(raw.relatedKeyword) !== normalize(context.keyword)) {
+      rejectedCount += 1;
+      continue;
+    }
+    if (
+      !sourceContains(
+        context.sourcePassage,
+        options[correctIndex]
+      )
+    ) {
+      rejectedCount += 1;
+      continue;
+    }
+
+    seenQuestions.add(normalizedQuestion);
+    validMcqs.push({
+      id: `mcq-${crypto.randomUUID()}`,
+      question,
+      options: options as [string, string, string, string],
+      correctIndex,
+      explanation,
+      // Store the canonical source excerpt rather than relying on model paraphrase.
+      supportingSourcePassage: context.sourcePassage,
+      sourcePageReference: context.pageNumber,
+      relatedKeyword: context.keyword || 'Unit Concept',
+    });
+  }
+
+  const status =
+    validMcqs.length === 0
+      ? 'PARTIAL'
+      : rejectedCount > 0 || validMcqs.length < targetCount
+        ? 'PARTIAL'
+        : 'COMPLETED';
 
   return {
-    status: jobStatus,
+    status,
     modelUsed,
     mcqs: validMcqs,
     mcqGenerationNote:
-      parsed.mcqGenerationNote ||
+      String(parsed.mcqGenerationNote || '').trim() ||
       (validMcqs.length > 0
-        ? `Generated ${validMcqs.length} source-verified practice question(s) directly from your verified unit notes.`
-        : 'The uploaded notes did not contain enough verified factual statements to generate reliable MCQs without external information.'),
+        ? `Generated ${validMcqs.length} question(s) and rejected ${rejectedCount} question(s) that failed source or format validation.`
+        : 'No generated question passed the source, citation, and answer validation checks.'),
   };
-}
-
-export default async function handler(req: any, res: any) {
-  const startTime = Date.now();
-  const requestId = `mcq-job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-  res.setHeader('Content-Type', 'application/json');
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({
-      success: false,
-      status: 'FAILED',
-      error: {
-        code: 'METHOD_NOT_ALLOWED',
-        message: 'Method Not Allowed. Use POST.',
-      },
-    });
-  }
-
-  try {
-    const payload = typeof req.body === 'string' ? JSON.parse(req.body) : req.body || {};
-    const result = await regenerateMcqsCore({ ...payload, jobId: requestId });
-    const durationMs = Date.now() - startTime;
-    console.log(`[${requestId}] Finished MCQ Job: ${result.status} (${result.mcqs?.length || 0} MCQs, ${durationMs}ms, model: ${result.modelUsed})`);
-
-    return res.status(200).json({
-      success: true,
-      jobId: requestId,
-      data: result,
-      ...result,
-    });
-  } catch (error: any) {
-    const durationMs = Date.now() - startTime;
-    console.error(`[${requestId}] MCQ Job FAILED (${durationMs}ms):`, error?.message || error);
-    const status = error?.status || error?.statusCode || 500;
-    const message =
-      error?.message ||
-      'Failed to synthesize practice MCQs. Please verify your GEMINI_API_KEY environment variable.';
-
-    return res.status(status).json({
-      success: false,
-      status: 'FAILED',
-      jobId: requestId,
-      error: {
-        code: error?.code || 'MCQ_GENERATION_ERROR',
-        message,
-      },
-      message,
-      mcqs: [],
-      mcqGenerationNote: message,
-    });
-  }
 }
